@@ -479,45 +479,59 @@ cplusplus.com/reference/clibrary/cstdio/fopen.html, fopen) function.
 
 Throws: $(D ErrnoException) in case of error.
  */
-    void open(string name, in char[] stdioOpenmode = "rb") @safe
+    void open(string name, in char[] stdioOpenmode = "rb") @trusted
     {
-        //detach();
-        //this = File(name, stdioOpenmode);
+        import core.stdc.stdlib : malloc;
+        import std.exception : enforce;
+        import std.conv : text;
+        import std.exception : errnoEnforce;
+
         if (_p.refs == 1)
         {
-            
+            version (Posix)
+            {
+                import core.sys.posix.stdio : pclose;
+                import std.format : format;
+
+                if (_p.isPopened)
+                {
+                    auto res = pclose(_p.handle);
+                    errnoEnforce(res != -1,
+                            "Could not close pipe `"~_name~"'");
+                    errnoEnforce(res == 0, format("Command returned %d", res));
+                    return;
+                }
+            }
+            errnoEnforce(.fclose(_p.handle) == 0,
+                    "Could not close file `"~_name~"'");
         }
         else
         {
-            import core.stdc.stdlib : malloc;
-            import std.exception : enforce;
-            import std.conv : text;
-            import std.exception : errnoEnforce;
-            
+            writeln("HEREE");
             _p.refs--;
-            auto handle = errnoEnforce(.fopen(name, stdioOpenmode), 
-                              text("Cannot open file `", name, "' in mode `",
-                                   stdioOpenmode, "'")),
-            _p = cast(Impl*) enforce(malloc(Impl.sizeof), "Out of memory"); 
-            _p.handle = handle;
-            _p.refs = 1;
-            _p.isPopened = false;
-            _p.orientation = Orientation.unknown;
-            _name = name;
 
-            version (MICROSOFT_STDIO)
-            {
-                bool append, update;
-                foreach (c; stdioOpenmode)
-                    if (c == 'a')
-                        append = true;
-                    else
-                    if (c == '+')
-                        update = true;
-                if (append && !update)
-                    seek(size);
-            }
+        }
+        auto handle = errnoEnforce(.fopen(name, stdioOpenmode),
+                          text("Cannot open file `", name, "' in mode `",
+                               stdioOpenmode, "'")),
+        _p = cast(Impl*) enforce(malloc(Impl.sizeof), "Out of memory");
+        _p.handle = handle;
+        _p.refs = 1;
+        _p.isPopened = false;
+        _p.orientation = Orientation.unknown;
+        _name = name;
 
+        version (MICROSOFT_STDIO)
+        {
+            bool append, update;
+            foreach (c; stdioOpenmode)
+                if (c == 'a')
+                    append = true;
+                else
+                if (c == '+')
+                    update = true;
+            if (append && !update)
+                seek(size);
         }
     }
 
