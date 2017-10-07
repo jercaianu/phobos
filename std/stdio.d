@@ -481,8 +481,44 @@ Throws: $(D ErrnoException) in case of error.
  */
     void open(string name, in char[] stdioOpenmode = "rb") @safe
     {
-        detach();
-        this = File(name, stdioOpenmode);
+        //detach();
+        //this = File(name, stdioOpenmode);
+        if (_p.refs == 1)
+        {
+            
+        }
+        else
+        {
+            import core.stdc.stdlib : malloc;
+            import std.exception : enforce;
+            import std.conv : text;
+            import std.exception : errnoEnforce;
+            
+            _p.refs--;
+            auto handle = errnoEnforce(.fopen(name, stdioOpenmode), 
+                              text("Cannot open file `", name, "' in mode `",
+                                   stdioOpenmode, "'")),
+            _p = cast(Impl*) enforce(malloc(Impl.sizeof), "Out of memory"); 
+            _p.handle = handle;
+            _p.refs = 1;
+            _p.isPopened = false;
+            _p.orientation = Orientation.unknown;
+            _name = name;
+
+            version (MICROSOFT_STDIO)
+            {
+                bool append, update;
+                foreach (c; stdioOpenmode)
+                    if (c == 'a')
+                        append = true;
+                    else
+                    if (c == '+')
+                        update = true;
+                if (append && !update)
+                    seek(size);
+            }
+
+        }
     }
 
 /**
