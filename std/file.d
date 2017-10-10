@@ -4342,7 +4342,7 @@ string tempDir() @trusted
  * Throws:
  *     `Exception` in case statvfs (POSIX) or GetDiskFreeSpaceExW (Windows) fails.
  */
-ulong getAvailableDiskSpace(string path)
+ulong getAvailableDiskSpace(string path) @trusted
 {
     import std.exception : enforce;
     import std.conv : text;
@@ -4371,5 +4371,18 @@ ulong getAvailableDiskSpace(string path)
         enforce(err == 0, text("Cannot get available disk space: ", err));
 
         return stats.f_bavail * stats.f_frsize;
+    }
+}
+
+@safe unittest
+{
+    auto space = getAvailableDiskSpace(".");
+    assert(space >= 100000);
+
+    try {
+        space = getAvailableDiskSpace("ThisFileDoesNotExist123123");
+        assert(0);
+    } catch (Exception e){
+        assert(1);
     }
 }
