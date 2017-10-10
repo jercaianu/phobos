@@ -4357,7 +4357,7 @@ ulong getAvailableDiskSpace(string path)
         ULARGE_INTEGER freeBytesAvailable;
         path ~= dirSeparator;
         auto err = GetDiskFreeSpaceExW(path.tempCStringW(), &freeBytesAvailable, null, null);
-        enforce(err == 0, text("Cannot get available disk space: ", err));
+        enforce(err != 0, text("Cannot get available disk space: ", GetLastError()));
 
         return freeBytesAvailable.QuadPart;
     }
