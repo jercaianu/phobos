@@ -4323,3 +4323,53 @@ string tempDir() @trusted
     }
     return cache;
 }
+
+/**
+ * Returns the available space in a file system.
+ *
+ * On Windows, this function uses the result of the Windows API function
+ * $(LINK2 https://msdn.microsoft.com/en-us/library/windows/desktop/aa364937(v=vs.85).aspx, $(D GetDiskFreeSpaceExW)).
+ *
+ * On POSIX platforms, it uses the $(LINK2 https://msdn.microsoft.com/en-us/library/windows/desktop/aa364937(v=vs.85).aspx,
+ * $(D statvfs)) function.
+ *
+ * Params:
+ *     path = a valid path to any file in the file system
+ *
+ * Returns:
+ *    ulong which contains the available space in bytes
+ *
+ * Throws:
+ *     `Exception` in case statvfs (POSIX) or GetDiskFreeSpaceExW (Windows) fails.
+ */
+ulong getAvailableDiskSpace(string path)
+{
+    import std.exception : enforce;
+    import std.conv : text;
+
+    version (Windows)
+    {
+        import std.path;
+        import core.sys.windows.winbase;
+        import core.sys.windows.winnt;
+        import std.internal.cstring;
+
+        ULARGE_INTEGER freeBytesAvailable;
+        path ~= dirSeparator;
+        auto err = GetDiskFreeSpaceExW(path.tempCStringW(), &freeBytesAvailable, null, null);
+        enforce(err == 0, text("Cannot get available disk space: ", err));
+
+        return freeBytesAvailable.QuadPart;
+    }
+    else
+    {
+        import core.sys.posix.sys.statvfs;
+        import std.string: toStringz;
+
+        statvfs_t stats = void;
+        auto err = statvfs(path.toStringz(), &stats);
+        enforce(err == 0, text("Cannot get available disk space: ", err));
+
+        return stats.f_bavail * stats.f_frsize;
+    }
+}
