@@ -6823,9 +6823,18 @@ if (isFloatingPoint!(F) && isFloatingPoint!(G))
     assert(approxEqual(pow(twoI, three), 8.0));
 }
 
-/** Computes the value of a positive integer x, raised to the power n, modulo m.
+/** Computes the value of a positive integer `x`, raised to the power `n`, modulo `m`.
  *
- * All values have to be unsigned types, otherwise it will raise a compilation error.
+ *  Params:
+ *      x = base
+ *      n = exponent
+ *      m = modulus
+ *
+ *  Returns:
+ *      `x` to the power `n`, modulo `m`.
+ *      The return type is the largest of `x`'s and `m`'s type.
+ *
+ * The function requires that all values have unsigned types.
  */
 Unqual!(Largest!(F, H)) powmod(F, G, H)(F x, G n, H m)
 if (isUnsigned!F && isUnsigned!G && isUnsigned!H)
