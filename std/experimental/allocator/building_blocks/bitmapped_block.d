@@ -123,6 +123,7 @@ struct BitmappedBlock(size_t theBlockSize, uint theAlignment = platformAlignment
     private size_t _startIdx;
     // }
 
+    pure nothrow @safe @nogc
     private size_t totalAllocation(size_t capacity)
     {
         auto blocks = capacity.divideRoundUp(blockSize);
@@ -240,6 +241,7 @@ struct BitmappedBlock(size_t theBlockSize, uint theAlignment = platformAlignment
     Returns the actual bytes allocated when $(D n) bytes are requested, i.e.
     $(D n.roundUpToMultipleOf(blockSize)).
     */
+    pure nothrow @safe @nogc
     size_t goodAllocSize(size_t n)
     {
         return n.roundUpToMultipleOf(blockSize);
@@ -350,12 +352,12 @@ struct BitmappedBlock(size_t theBlockSize, uint theAlignment = platformAlignment
     `Ternary.no` otherwise. Never returns `Ternary.unkown`. (This
     method is somewhat tolerant in that accepts an interior slice.)
     */
-    Ternary owns(void[] b) const
+    pure nothrow @trusted @nogc
+    Ternary owns(const void[] b) const
     {
-        //if (!b.ptr) return Ternary.no;
-        assert(b.ptr !is null || b.length == 0, "Corrupt block.");
-        return Ternary(b.ptr >= _payload.ptr
-            && b.ptr + b.length <= _payload.ptr + _payload.length);
+        assert(b || b.length == 0, "Corrupt block.");
+        return Ternary(b && _payload && (&b[0] >= &_payload[0])
+               && (&b[0] + b.length) <= (&_payload[0] + _payload.length));
     }
 
     /*
@@ -823,10 +825,11 @@ struct BitmappedBlock(size_t theBlockSize, uint theAlignment = platformAlignment
     testAllocateAll!(128 * 20)(13 * 128, 128);
 }
 
-// Test totalAllocation
-@safe unittest
+// Test totalAllocation and goodAllocSize
+nothrow @safe @nogc unittest
 {
     BitmappedBlock!(8, 8, NullAllocator) h1;
+    assert(h1.goodAllocSize(1) == 8);
     assert(h1.totalAllocation(1) >= 8);
     assert(h1.totalAllocation(64) >= 64);
     assert(h1.totalAllocation(8 * 64) >= 8 * 64);
@@ -834,13 +837,28 @@ struct BitmappedBlock(size_t theBlockSize, uint theAlignment = platformAlignment
     assert(h1.totalAllocation(8 * 64 + 1) >= 8 * 65);
 
     BitmappedBlock!(64, 8, NullAllocator) h2;
+    assert(h2.goodAllocSize(1) == 64);
     assert(h2.totalAllocation(1) >= 64);
     assert(h2.totalAllocation(64 * 64) >= 64 * 64);
 
     BitmappedBlock!(4096, 4096, NullAllocator) h3;
+    assert(h3.goodAllocSize(1) == 4096);
     assert(h3.totalAllocation(1) >= 4096);
     assert(h3.totalAllocation(64 * 4096) >= 64 * 4096);
     assert(h3.totalAllocation(64 * 4096 + 1) >= 65 * 4096);
+}
+
+// Test owns
+@system unittest
+{
+    import std.experimental.allocator.gc_allocator : GCAllocator;
+    import std.typecons : Ternary;
+
+    auto a = BitmappedBlock!(64, 8, GCAllocator)(1024 * 64);
+    const void[] buff = a.allocate(42);
+
+    assert((() nothrow @safe @nogc => a.owns(buff))() == Ternary.yes);
+    assert((() nothrow @safe @nogc => a.owns(null))() == Ternary.no);
 }
 
 // BitmappedBlockWithInternalPointers
@@ -915,6 +933,7 @@ struct BitmappedBlockWithInternalPointers(
     alias alignment = theAlignment;
 
     /// Ditto
+    pure nothrow @safe @nogc
     size_t goodAllocSize(size_t n)
     {
         return n.roundUpToMultipleOf(_heap.blockSize);
@@ -1089,6 +1108,12 @@ struct BitmappedBlockWithInternalPointers(
     assert(b.length == 4097);
     h.resolveInternalPointer(b.ptr + 4096, p);
     assert(p.ptr is b.ptr);
+}
+
+@system unittest
+{
+    auto h = BitmappedBlockWithInternalPointers!(4096)(new ubyte[4096 * 1024]);
+    assert((() pure nothrow @safe @nogc => h.goodAllocSize(1))() == 4096);
 }
 
 /**
