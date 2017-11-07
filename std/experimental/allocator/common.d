@@ -349,7 +349,7 @@ implementation of $(D reallocate).
 */
 bool reallocate(Allocator)(ref Allocator a, ref void[] b, size_t s)
 {
-    if (b.length == s) return true;
+    if (b.length >= s) return true;
     static if (hasMember!(Allocator, "expand"))
     {
         if (b.length <= s && a.expand(b, s - b.length)) return true;
@@ -380,17 +380,21 @@ implementation of $(D reallocate).
 */
 bool alignedReallocate(Allocator)(ref Allocator alloc,
         ref void[] b, size_t s, uint a)
+if (hasMember!(Allocator, "alignedAllocate"))
 {
+    if (b.length >= s && b.ptr.alignedAt(a))
+    {
+        return true;
+    }
+
     static if (hasMember!(Allocator, "expand"))
     {
         if (b.length <= s && b.ptr.alignedAt(a)
             && alloc.expand(b, s - b.length)) return true;
     }
-    else
-    {
-        if (b.length == s) return true;
-    }
+
     auto newB = alloc.alignedAllocate(s, a);
+    if (newB.length < s) return false;
     if (newB.length <= b.length) newB[] = b[0 .. newB.length];
     else newB[0 .. b.length] = b[];
     static if (hasMember!(Allocator, "deallocate"))
