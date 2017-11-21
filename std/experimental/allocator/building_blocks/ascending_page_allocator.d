@@ -17,7 +17,7 @@ memory.
 */
 struct AscendingPageAllocator
 {
-    enum size_t pageSize = 4096;
+    size_t pageSize;
     size_t numPages;
     bool valid;
 
@@ -44,14 +44,19 @@ struct AscendingPageAllocator
         {
             import core.sys.posix.sys.mman : mmap, MAP_ANON, PROT_READ,
                    PROT_WRITE, PROT_NONE, MAP_PRIVATE, MAP_FAILED;
+            import core.sys.posix.unistd;
+            pageSize = cast(size_t) sysconf(_SC_PAGESIZE);
             data = mmap(null, pageSize * pages, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
             enforce(data != MAP_FAILED, "Failed to mmap memory");
         }
         else version(Windows)
         {
             import core.sys.windows.windows : VirtualAlloc, PAGE_NOACCESS,
-                   MEM_COMMIT, MEM_RESERVE;
-            data = VirtualAlloc(null, pageSize * pages, MEM_COMMIT | MEM_RESERVE, PAGE_NOACCESS);
+                   MEM_COMMIT, MEM_RESERVE, GetSystemInfo, SYSTEM_INFO;
+            SYSTEM_INFO si;
+            GetSystemInfo(&si);
+            pageSize = cast(size_t) si.dwPageSize;
+            data = VirtualAlloc(null, pageSize * pages, MEM_RESERVE, PAGE_NOACCESS);
             enforce(data != null, "Failed to VirtualAlloc memory");
         }
         offset = data;
@@ -85,10 +90,11 @@ struct AscendingPageAllocator
         }
         else version(Windows)
         {
-            import core.sys.windows.windows : VirtualProtect, PAGE_READWRITE;
+            import core.sys.windows.windows : VirtualProtect, PAGE_READWRITE, PAGE_NOACCESS;
             uint oldProtect;
             auto ret = VirtualProtect(result, goodSize, PAGE_READWRITE, &oldProtect);
             enforce(ret != 0, "Failed to allocate memory, VirtualProtect failure");
+            assert(oldProtect == PAGE_NOACCESS);
         }
 
         return cast(void[]) result[0 .. n];
@@ -99,7 +105,7 @@ struct AscendingPageAllocator
     */
     size_t goodAllocSize(size_t n)
     {
-        return n.roundUpToMultipleOf(pageSize);
+        return n.roundUpToMultipleOf(cast(uint) pageSize);
     }
 
     /**
@@ -120,15 +126,17 @@ struct AscendingPageAllocator
             auto ret = mprotect(buf.ptr, goodSize, PROT_NONE);
             enforce(ret == 0, "Failed to deallocate memory, mprotect failure");
 
-            // madvise to let the OS reclaim the resources
+            // posix_madvise to let the OS reclaim the resources
             ret = posix_madvise(buf.ptr, goodSize, POSIX_MADV_DONTNEED);
             enforce(ret == 0, "Failed to deallocate, posix_madvise failure");
             pagesUsed -= goodSize / pageSize;
 
             if (!valid && pagesUsed == 0)
             {
-                munmap(data, numPages * pageSize);
+                ret = munmap(data, numPages * pageSize);
+                enforce(ret == 0, "Failed to unmap memory, munmap failure");
                 data = null;
+                offset = null;
             }
 
             return true;
@@ -139,22 +147,26 @@ struct AscendingPageAllocator
         bool deallocate(void[] buf)
         {
             import core.sys.windows.windows : VirtualUnlock, VirtualProtect,
-                   VirtualFree, PAGE_NOACCESS, MEM_RELEASE;
+                   VirtualFree, PAGE_NOACCESS, PAGE_READWRITE, MEM_RELEASE;
             import std.exception : enforce;
 
             uint oldProtect;
             size_t goodSize = goodAllocSize(buf.length);
             auto ret = VirtualProtect(buf.ptr, goodSize, PAGE_NOACCESS, &oldProtect);
             enforce(ret != 0, "Failed to deallocate memory, VirtualProtect failure");
+            assert(oldProtect == PAGE_READWRITE);
 
-            // MSDN states for VirtualAlloc: Calling VirtualUnlock on a range
+            // MSDN states for VirtualUnlock: Calling VirtualUnlock on a range
             // of memory that is not locked releases the pages from the process's working set.
-            VirtualUnlock(buf.ptr, goodSize);
+            ret = VirtualUnlock(buf.ptr, goodSize);
+            enforce(ret == 0, "Pages should not be locked, VirtualUnlock is expected to fail");
             pagesUsed -= goodSize / pageSize;
 
             if (!valid && pagesUsed == 0)
             {
-                VirtualFree(data, 0, MEM_RELEASE);
+                ret = VirtualFree(data, 0, MEM_RELEASE);
+                enforce(ret != 0, "Failed to unmap memory, VirtualFree failure");
+                offset = null;
                 data = null;
             }
 
@@ -177,19 +189,24 @@ struct AscendingPageAllocator
     */
     void invalidate()
     {
+        import std.exception : enforce;
+
         valid = false;
         if (pagesUsed == 0) {
             version(Posix)
             {
                 import core.sys.posix.sys.mman : munmap;
-                munmap(data, numPages * pageSize);
+                auto ret = munmap(data, numPages * pageSize);
+                enforce(ret == 0, "Failed to unmap memory, munmap failure");
             }
             else version(Windows)
             {
                 import core.sys.windows.windows : VirtualFree, MEM_RELEASE;
-                VirtualFree(data, 0, MEM_RELEASE);
+                auto ret = VirtualFree(data, 0, MEM_RELEASE);
+                enforce(ret != 0, "Failed to unmap memory, VirtualFree failure");
             }
             data = null;
+            offset = null;
         }
     }
 
@@ -245,10 +262,11 @@ struct AscendingPageAllocator
         }
         else version(Windows)
         {
-            import core.sys.windows.windows : VirtualProtect, PAGE_READWRITE;
+            import core.sys.windows.windows : VirtualProtect, PAGE_READWRITE, PAGE_NOACCESS;
             uint oldProtect;
             auto ret = VirtualProtect(offset, extraPages * pageSize, PAGE_READWRITE, &oldProtect);
             enforce(ret != 0, "Failed to expand, VirtualProtect failure");
+            assert(oldProtect == PAGE_NOACCESS);
         }
 
         pagesUsed += extraPages;
@@ -291,23 +309,24 @@ struct AscendingPageAllocator
     }
 
     AscendingPageAllocator a = AscendingPageAllocator(4);
+    size_t pageSize = a.pageSize;
     void[] b1 = a.allocate(1);
-    assert(a.getAvailableSize() == 3 * 4096);
+    assert(a.getAvailableSize() == 3 * pageSize);
     testrw(b1);
 
     void[] b2 = a.allocate(2);
-    assert(a.getAvailableSize() == 2 * 4096);
+    assert(a.getAvailableSize() == 2 * pageSize);
     testrw(b2);
 
-    void[] b3 = a.allocate(4097);
+    void[] b3 = a.allocate(pageSize + 1);
     assert(a.getAvailableSize() == 0);
     testrw(b3);
 
     assert(b1.length == 1);
     assert(b2.length == 2);
-    assert(b3.length == 4097);
+    assert(b3.length == pageSize + 1);
 
-    assert(a.offset - a.data == 4 * 4096);
+    assert(a.offset - a.data == 4 * pageSize);
     void[] b4 = a.allocate(4);
     assert(!b4);
     a.invalidate();
@@ -334,9 +353,10 @@ struct AscendingPageAllocator
 
     size_t numPages = 26214;
     AscendingPageAllocator a = AscendingPageAllocator(numPages);
+    size_t pageSize = a.pageSize;
     for (int i = 0; i < numPages; i++) {
-        void[] buf = a.allocate(4096);
-        assert(buf.length == 4096);
+        void[] buf = a.allocate(pageSize);
+        assert(buf.length == pageSize);
         testrw(buf);
         a.deallocate(buf);
     }
@@ -360,42 +380,42 @@ struct AscendingPageAllocator
     }
 
     size_t numPages = 5;
-    enum pageSize = 4096;
     AscendingPageAllocator a = AscendingPageAllocator(numPages);
+    size_t pageSize = a.pageSize;
 
-    void[] b1 = a.allocate(2048);
-    assert(b1.length == 2048);
+    void[] b1 = a.allocate(pageSize / 2);
+    assert(b1.length == pageSize / 2);
 
-    void[] b2 = a.allocate(2048);
-    assert(a.expand(b1, 2048));
+    void[] b2 = a.allocate(pageSize / 2);
+    assert(a.expand(b1, pageSize / 2));
     assert(a.expand(b1, 0));
     assert(!a.expand(b1, 1));
     testrw(b1);
 
-    assert(a.expand(b2, 2048));
+    assert(a.expand(b2, pageSize / 2));
     testrw(b2);
     assert(b2.length == pageSize);
     assert(a.getAvailableSize() == pageSize * 3);
 
-    void[] b3 = a.allocate(2048);
+    void[] b3 = a.allocate(pageSize / 2);
     assert(a.reallocate(b1, b1.length));
     assert(a.reallocate(b2, b2.length));
     assert(a.reallocate(b3, b3.length));
 
-    assert(b3.length == 2048);
+    assert(b3.length == pageSize / 2);
     testrw(b3);
-    assert(a.expand(b3, 1000));
-    testrw(b3);
-    assert(a.expand(b3, 0));
-    assert(b3.length == 3048);
-    assert(a.expand(b3, 1047));
+    assert(a.expand(b3, pageSize / 4));
     testrw(b3);
     assert(a.expand(b3, 0));
-    assert(b3.length == 4095);
-    assert(a.expand(b3, 100));
+    assert(b3.length == pageSize / 2 + pageSize / 4);
+    assert(a.expand(b3, pageSize / 4 - 1));
+    testrw(b3);
+    assert(a.expand(b3, 0));
+    assert(b3.length == pageSize - 1);
+    assert(a.expand(b3, 2));
     assert(a.expand(b3, 0));
     assert(a.getAvailableSize() == pageSize);
-    assert(b3.length == 4195);
+    assert(b3.length == pageSize + 1);
     testrw(b3);
 
     assert(a.reallocate(b1, b1.length));
@@ -416,3 +436,62 @@ struct AscendingPageAllocator
     a.deallocate(b3);
     assert(!a.data);
 }
+
+/*
+@system unittest
+{
+    //size_t numPages = 26214400;
+    size_t numPages = 262100;
+    enum testNum = 100;
+    void[][testNum] buf;
+    AscendingPageAllocator a = AscendingPageAllocator(numPages);
+    size_t pageSize = a.pageSize;
+
+    for (int i = 0; i < numPages; i += testNum)
+    {
+        for (int j = 0; j < testNum; j++)
+        {
+            buf[j] = a.allocate(pageSize);
+        }
+
+        for (int j = 0; j < testNum; j++)
+        {
+            a.deallocate(buf[j]);
+        }
+    }
+
+}*/
+
+void main()
+{
+    static void testrw(void[] b)
+    {
+        ubyte* buf = cast(ubyte*) b.ptr;
+        buf[0] = 100;
+        buf[b.length - 1] = 101;
+
+        assert(buf[0] == 100);
+        assert(buf[b.length - 1] == 101);
+    }
+
+    size_t numPages = 26214400;
+    enum testNum = 1;
+    void[][testNum] buf;
+    AscendingPageAllocator a = AscendingPageAllocator(numPages);
+    size_t pageSize = a.pageSize;
+
+    for (int i = 0; i < numPages; i += testNum)
+    {
+        for (int j = 0; j < testNum; j++)
+        {
+            buf[j] = a.allocate(pageSize);
+            testrw(buf[j]);
+        }
+
+        for (int j = 0; j < testNum; j++)
+        {
+            a.deallocate(buf[j]);
+        }
+    }
+}
+
