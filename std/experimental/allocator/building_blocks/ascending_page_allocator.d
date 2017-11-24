@@ -30,6 +30,9 @@ struct AscendingPageAllocator
     // Number of pages which contain alive objects
     size_t pagesUsed;
 
+    void* readWriteLimit;
+    enum extraAllocPages = 1000;
+
     /**
     The allocator receives as a parameter the size in pages of the virtual
     address range (we assume the page size is 4096).
@@ -60,6 +63,7 @@ struct AscendingPageAllocator
             enforce(data != null, "Failed to VirtualAlloc memory");
         }
         offset = data;
+        readWriteLimit = data;
     }
 
     /**
@@ -71,31 +75,47 @@ struct AscendingPageAllocator
     void[] allocate(size_t n)
     {
         import std.exception : enforce;
+        import std.algorithm : min;
 
         size_t goodSize = goodAllocSize(n);
         if (offset - data > numPages * pageSize - goodSize)
             return null;
 
+        if (offset + goodSize > readWriteLimit)
+        {
+            void* newReadWriteLimit = min(data + numPages * pageSize, offset + goodSize + extraAllocPages * pageSize);
+            if (newReadWriteLimit != readWriteLimit)
+            {
+                assert(newReadWriteLimit > readWriteLimit);
+                // Give memory back just by changing page protection
+                version(Posix)
+                {
+                    import core.sys.posix.sys.mman : mmap, mprotect,
+                           MAP_PRIVATE, MAP_ANON, MAP_FAILED, PROT_NONE, PROT_WRITE, PROT_READ;
+                    if (newReadWriteLimit != readWriteLimit)
+                    {
+                        auto ret = mprotect(readWriteLimit, newReadWriteLimit - readWriteLimit, PROT_WRITE | PROT_READ);
+                        enforce(ret == 0, "Failed to allocate memory, mprotect failure");
+                    }
+                }
+                else version(Windows)
+                {
+                    import core.sys.windows.windows : VirtualAlloc, MEM_COMMIT, VirtualProtect, PAGE_READWRITE, PAGE_NOACCESS;
+                    if (newReadWriteLimit != readWriteLimit)
+                    {
+                        assert(newReadWriteLimit > readWriteLimit);
+                        auto ret = VirtualAlloc(readWriteLimit, newReadWriteLimit - readWriteLimit, MEM_COMMIT, PAGE_READWRITE);
+                        enforce(ret, "Failed to allocate memory, VirtualAlloc failure");
+                    }
+                }
+                readWriteLimit = newReadWriteLimit;
+            }
+
+        }
+
         void* result = offset;
         offset += goodSize;
         pagesUsed += goodSize / pageSize;
-
-        // Give memory back just by changing page protection
-        version(Posix)
-        {
-            import core.sys.posix.sys.mman : mmap, mprotect,
-                   MAP_PRIVATE, MAP_ANON, MAP_FAILED, PROT_NONE, PROT_WRITE, PROT_READ;
-            auto ret = mprotect(result, goodSize, PROT_WRITE | PROT_READ);
-            enforce(ret == 0, "Failed to allocate memory, mprotect failure");
-        }
-        else version(Windows)
-        {
-            import core.sys.windows.windows : VirtualProtect, PAGE_READWRITE, PAGE_NOACCESS;
-            uint oldProtect;
-            auto ret = VirtualProtect(result, goodSize, PAGE_READWRITE, &oldProtect);
-            enforce(ret != 0, "Failed to allocate memory, VirtualProtect failure");
-            assert(oldProtect == PAGE_NOACCESS);
-        }
 
         return cast(void[]) result[0 .. n];
     }
@@ -120,6 +140,7 @@ struct AscendingPageAllocator
         bool deallocate(void[] buf)
         {
             import core.sys.posix.sys.mman : posix_madvise, POSIX_MADV_DONTNEED, mprotect, PROT_NONE, munmap;
+            import core.sys.darwin.sys.mman : madvise, MADV_FREE;
             import std.exception : enforce;
 
             size_t goodSize = goodAllocSize(buf.length);
@@ -127,7 +148,8 @@ struct AscendingPageAllocator
             enforce(ret == 0, "Failed to deallocate memory, mprotect failure");
 
             // posix_madvise to let the OS reclaim the resources
-            ret = posix_madvise(buf.ptr, goodSize, POSIX_MADV_DONTNEED);
+            //ret = posix_madvise(buf.ptr, goodSize, POSIX_MADV_DONTNEED);
+            ret = madvise(buf.ptr, goodSize, MADV_FREE);
             enforce(ret == 0, "Failed to deallocate, posix_madvise failure");
             pagesUsed -= goodSize / pageSize;
 
@@ -147,25 +169,17 @@ struct AscendingPageAllocator
         bool deallocate(void[] buf)
         {
             import core.sys.windows.windows : VirtualUnlock, VirtualProtect,
-                   VirtualFree, PAGE_NOACCESS, PAGE_READWRITE, MEM_RELEASE;
+                   VirtualFree, PAGE_NOACCESS, PAGE_READWRITE, MEM_RELEASE, MEM_RESET, VirtualAlloc;
             import std.exception : enforce;
 
-            uint oldProtect;
             size_t goodSize = goodAllocSize(buf.length);
-            auto ret = VirtualProtect(buf.ptr, goodSize, PAGE_NOACCESS, &oldProtect);
-            enforce(ret != 0, "Failed to deallocate memory, VirtualProtect failure");
-            assert(oldProtect == PAGE_READWRITE);
-
-            // MSDN states for VirtualUnlock: Calling VirtualUnlock on a range
-            // of memory that is not locked releases the pages from the process's working set.
-            ret = VirtualUnlock(buf.ptr, goodSize);
-            enforce(ret == 0, "Pages should not be locked, VirtualUnlock is expected to fail");
+            auto ret = VirtualAlloc(buf.ptr, goodSize, MEM_RESET, PAGE_NOACCESS);
+            assert(ret, "Failed to allocate, VirtualAlloc failure");
             pagesUsed -= goodSize / pageSize;
 
             if (!valid && pagesUsed == 0)
             {
-                ret = VirtualFree(data, 0, MEM_RELEASE);
-                enforce(ret != 0, "Failed to unmap memory, VirtualFree failure");
+                enforce(VirtualFree(data, 0, MEM_RELEASE), "Failed to unmap memory, VirtualFree failure");
                 offset = null;
                 data = null;
             }
@@ -227,6 +241,7 @@ struct AscendingPageAllocator
     bool expand(ref void[] b, size_t delta)
     {
         import std.exception : enforce;
+        import std.algorithm : min;
 
         if (!delta) return true;
         if (!b.ptr) return false;
@@ -254,19 +269,23 @@ struct AscendingPageAllocator
         if (offset - data > pageSize * (numPages - extraPages))
             return false;
 
-        version(Posix)
+        void* newPtrEnd = b.ptr + goodSize + extraPages * pageSize;
+        if (newPtrEnd > readWriteLimit)
         {
-            import core.sys.posix.sys.mman : mprotect, PROT_READ, PROT_WRITE;
-            auto ret = mprotect(offset, extraPages * pageSize, PROT_READ | PROT_WRITE);
-            enforce(ret == 0, "Failed to expand, mprotect failure");
-        }
-        else version(Windows)
-        {
-            import core.sys.windows.windows : VirtualProtect, PAGE_READWRITE, PAGE_NOACCESS;
-            uint oldProtect;
-            auto ret = VirtualProtect(offset, extraPages * pageSize, PAGE_READWRITE, &oldProtect);
-            enforce(ret != 0, "Failed to expand, VirtualProtect failure");
-            assert(oldProtect == PAGE_NOACCESS);
+            void* newReadWriteLimit = min(data + numPages * pageSize, newPtrEnd + extraAllocPages * pageSize);
+            version(Posix)
+            {
+                import core.sys.posix.sys.mman : mprotect, PROT_READ, PROT_WRITE;
+                auto ret = mprotect(readWriteLimit, newReadWriteLimit - readWriteLimit, PROT_READ | PROT_WRITE);
+                enforce(ret == 0, "Failed to expand, mprotect failure");
+            }
+            else version(Windows)
+            {
+                import core.sys.windows.windows : VirtualAlloc, VirtualProtect, PAGE_READWRITE, PAGE_NOACCESS, MEM_COMMIT, MEM_RESERVE;
+                auto ret = VirtualAlloc(readWriteLimit, newReadWriteLimit - readWriteLimit, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+                enforce(ret, "Failed to expand, VirtualAlloc failure");
+            }
+            readWriteLimit = newReadWriteLimit;
         }
 
         pagesUsed += extraPages;
@@ -437,54 +456,29 @@ struct AscendingPageAllocator
     assert(!a.data);
 }
 
-/*
+
 @system unittest
-{
-    //size_t numPages = 26214400;
-    size_t numPages = 262100;
-    enum testNum = 100;
-    void[][testNum] buf;
-    AscendingPageAllocator a = AscendingPageAllocator(numPages);
-    size_t pageSize = a.pageSize;
-
-    for (int i = 0; i < numPages; i += testNum)
-    {
-        for (int j = 0; j < testNum; j++)
-        {
-            buf[j] = a.allocate(pageSize);
-        }
-
-        for (int j = 0; j < testNum; j++)
-        {
-            a.deallocate(buf[j]);
-        }
-    }
-
-}*/
-
-void main()
 {
     static void testrw(void[] b)
     {
         ubyte* buf = cast(ubyte*) b.ptr;
         buf[0] = 100;
-        buf[b.length - 1] = 101;
-
         assert(buf[0] == 100);
+        buf[b.length - 1] = 101;
         assert(buf[b.length - 1] == 101);
     }
-
-    size_t numPages = 26214400;
-    enum testNum = 1;
+    size_t numPages = 21000;
+    enum testNum = 100;
+    enum allocPages = 10;
     void[][testNum] buf;
     AscendingPageAllocator a = AscendingPageAllocator(numPages);
     size_t pageSize = a.pageSize;
 
-    for (int i = 0; i < numPages; i += testNum)
+    for (int i = 0; i < numPages; i += testNum * allocPages)
     {
         for (int j = 0; j < testNum; j++)
         {
-            buf[j] = a.allocate(pageSize);
+            buf[j] = a.allocate(pageSize * allocPages);
             testrw(buf[j]);
         }
 
@@ -494,4 +488,8 @@ void main()
         }
     }
 }
+
+void main()
+{}
+
 
