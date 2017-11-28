@@ -24,6 +24,8 @@ $(HTTPS microsoft.com/en-us/research/wp-content/uploads/2017/07/snowflake-extend
 */
 struct AscendingPageAllocator
 {
+    import std.typecons : Ternary;
+
 private:
     size_t pageSize;
     size_t numPages;
@@ -44,14 +46,15 @@ private:
     enum extraAllocPages = 1000;
 
 public:
+    enum uint alignment = 4096;
     /**
     The allocator receives as a parameter the size in pages of the virtual
     address range
     */
-    this(size_t pages)
+    this(size_t n)
     {
         valid = true;
-        numPages = pages;
+
         version(Posix)
         {
             import core.sys.posix.sys.mman : mmap, MAP_ANON, PROT_NONE,
@@ -59,7 +62,8 @@ public:
             import core.sys.posix.unistd : sysconf, _SC_PAGESIZE;
 
             pageSize = cast(size_t) sysconf(_SC_PAGESIZE);
-            data = mmap(null, pageSize * pages, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
+            numPages = n.roundUpToMultipleOf(cast(uint) pageSize) / pageSize;
+            data = mmap(null, pageSize * numPages, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
             if (data == MAP_FAILED)
                 assert(0, "Failed to mmap memory");
         }
@@ -71,7 +75,8 @@ public:
             SYSTEM_INFO si;
             GetSystemInfo(&si);
             pageSize = cast(size_t) si.dwPageSize;
-            data = VirtualAlloc(null, pageSize * pages, MEM_RESERVE, PAGE_NOACCESS);
+            numPages = n.roundUpToMultipleOf(cast(uint) pageSize) / pageSize;
+            data = VirtualAlloc(null, pageSize * numPages, MEM_RESERVE, PAGE_NOACCESS);
             if (!data)
                 assert(0, "Failed to VirtualAlloc memory");
         }
@@ -100,7 +105,7 @@ public:
         import std.algorithm.comparison : min;
 
         size_t goodSize = goodAllocSize(n);
-        if (offset - data > numPages * pageSize - goodSize)
+        if (goodSize > numPages * pageSize || offset - data > numPages * pageSize - goodSize)
             return null;
 
         if (offset + goodSize > readWriteLimit)
@@ -115,7 +120,7 @@ public:
 
                     auto ret = mprotect(readWriteLimit, newReadWriteLimit - readWriteLimit, PROT_WRITE | PROT_READ);
                     if (ret != 0)
-                        assert(0, "Failed to allocate memory, mprotect failure");
+                        return null;
                 }
                 else version(Windows)
                 {
@@ -124,7 +129,7 @@ public:
                     auto ret = VirtualAlloc(readWriteLimit, newReadWriteLimit - readWriteLimit,
                         MEM_COMMIT, PAGE_READWRITE);
                     if (!ret)
-                        assert(0, "Failed to allocate memory, VirtualAlloc failure");
+                        return null;
                 }
                 else
                 {
@@ -167,7 +172,7 @@ public:
             size_t goodSize = goodAllocSize(buf.length);
             auto ptr = mmap(buf.ptr, goodSize, PROT_NONE, MAP_ANON | MAP_PRIVATE | MAP_FIXED, -1, 0);
             if (ptr == MAP_FAILED)
-                assert(0, "Failed to deallocate memory, mmap failure");
+                 return false;
             pagesUsed -= goodSize / pageSize;
 
             if (!valid && pagesUsed == 0)
@@ -191,7 +196,7 @@ public:
             size_t goodSize = goodAllocSize(buf.length);
             auto ret = VirtualFree(buf.ptr, goodSize, MEM_DECOMMIT);
             if (ret == 0)
-                assert(0, "Failed to deallocate memory, VirtualAlloc failure");
+                 return false;
             pagesUsed -= goodSize / pageSize;
 
             if (!valid && pagesUsed == 0)
@@ -212,12 +217,14 @@ public:
     }
 
     /**
-    Returns `true` if the passed buffer is inside the range of virtual adresses.
+    Returns `Ternary.yes` if the passed buffer is inside the range of virtual adresses.
     Does not guarantee that the passed buffer is still valid.
     */
-    bool owns(void[] buf)
+    Ternary owns(void[] buf)
     {
-        return buf.ptr >= data && buf.ptr < buf.ptr + numPages * pageSize;
+        if (!data)
+            return Ternary.no;
+        return Ternary(buf.ptr >= data && buf.ptr < buf.ptr + numPages * pageSize);
     }
 
     /**
@@ -287,6 +294,8 @@ public:
     */
     size_t getAvailableSize()
     {
+        if (!valid)
+            return 0;
         return numPages * pageSize + data - offset;
     }
 
@@ -338,7 +347,7 @@ public:
 
                     auto ret = mprotect(readWriteLimit, newReadWriteLimit - readWriteLimit, PROT_READ | PROT_WRITE);
                     if (ret != 0)
-                        assert(0, "Failed to expand, mprotect failure");
+                        return false;
                 }
                 else version(Windows)
                 {
@@ -346,7 +355,7 @@ public:
                     auto ret = VirtualAlloc(readWriteLimit, newReadWriteLimit - readWriteLimit,
                         MEM_COMMIT, PAGE_READWRITE);
                     if (!ret)
-                        assert(0, "Failed to expand, VirtualAlloc failure");
+                        return false;
                 }
                 else
                 {
@@ -361,6 +370,24 @@ public:
         b = cast(void[]) b.ptr[0 .. b.length + delta];
         return true;
     }
+
+    /**
+    Returns `Ternary.yes` if the allocator does not contain any alive objects
+    and `Ternary.no` otherwise.
+    */
+    Ternary empty()
+    {
+        return Ternary(pagesUsed == 0);
+    }
+
+    /**
+    Unmaps the whole virtual address range on destruction.
+    */
+    ~this()
+    {
+        if (data)
+            deallocateAll();
+    }
 }
 
 @system unittest
@@ -374,8 +401,23 @@ public:
         assert(buf[b.length - 1] == 101);
     }
 
-    AscendingPageAllocator a = AscendingPageAllocator(4);
-    size_t pageSize = a.pageSize;
+    size_t pageSize;
+    version(Posix)
+    {
+        import core.sys.posix.unistd : sysconf, _SC_PAGESIZE;
+
+        pageSize = cast(size_t) sysconf(_SC_PAGESIZE);
+    }
+    else version(Windows)
+    {
+        import core.sys.windows.windows : GetSystemInfo, SYSTEM_INFO;
+
+        SYSTEM_INFO si;
+        GetSystemInfo(&si);
+        pageSize = cast(size_t) si.dwPageSize;
+    }
+
+    AscendingPageAllocator a = AscendingPageAllocator(4 * pageSize);
     void[] b1 = a.allocate(1);
     assert(a.getAvailableSize() == 3 * pageSize);
     testrw(b1);
@@ -417,9 +459,24 @@ public:
         assert(buf[b.length - 1] == 101);
     }
 
+    size_t pageSize;
+    version(Posix)
+    {
+        import core.sys.posix.unistd : sysconf, _SC_PAGESIZE;
+
+        pageSize = cast(size_t) sysconf(_SC_PAGESIZE);
+    }
+    else version(Windows)
+    {
+        import core.sys.windows.windows : GetSystemInfo, SYSTEM_INFO;
+
+        SYSTEM_INFO si;
+        GetSystemInfo(&si);
+        pageSize = cast(size_t) si.dwPageSize;
+    }
+
     size_t numPages = 26214;
-    AscendingPageAllocator a = AscendingPageAllocator(numPages);
-    size_t pageSize = a.pageSize;
+    AscendingPageAllocator a = AscendingPageAllocator(numPages * pageSize);
     for (int i = 0; i < numPages; i++)
     {
         void[] buf = a.allocate(pageSize);
@@ -446,9 +503,24 @@ public:
         assert(buf[b.length - 1] == 101);
     }
 
+    size_t pageSize;
+    version(Posix)
+    {
+        import core.sys.posix.unistd : sysconf, _SC_PAGESIZE;
+
+        pageSize = cast(size_t) sysconf(_SC_PAGESIZE);
+    }
+    else version(Windows)
+    {
+        import core.sys.windows.windows : GetSystemInfo, SYSTEM_INFO;
+
+        SYSTEM_INFO si;
+        GetSystemInfo(&si);
+        pageSize = cast(size_t) si.dwPageSize;
+    }
+
     size_t numPages = 5;
-    AscendingPageAllocator a = AscendingPageAllocator(numPages);
-    size_t pageSize = a.pageSize;
+    AscendingPageAllocator a = AscendingPageAllocator(numPages * pageSize);
 
     void[] b1 = a.allocate(pageSize / 2);
     assert(b1.length == pageSize / 2);
@@ -514,12 +586,28 @@ public:
         buf[b.length - 1] = 101;
         assert(buf[b.length - 1] == 101);
     }
+
+    size_t pageSize;
+    version(Posix)
+    {
+        import core.sys.posix.unistd : sysconf, _SC_PAGESIZE;
+
+        pageSize = cast(size_t) sysconf(_SC_PAGESIZE);
+    }
+    else version(Windows)
+    {
+        import core.sys.windows.windows : GetSystemInfo, SYSTEM_INFO;
+
+        SYSTEM_INFO si;
+        GetSystemInfo(&si);
+        pageSize = cast(size_t) si.dwPageSize;
+    }
+
     size_t numPages = 21000;
     enum testNum = 100;
     enum allocPages = 10;
     void[][testNum] buf;
-    AscendingPageAllocator a = AscendingPageAllocator(numPages);
-    size_t pageSize = a.pageSize;
+    AscendingPageAllocator a = AscendingPageAllocator(numPages * pageSize);
 
     for (int i = 0; i < numPages; i += testNum * allocPages)
     {
@@ -538,11 +626,29 @@ public:
 
 @system unittest
 {
+    size_t pageSize;
+    version(Posix)
+    {
+        import core.sys.posix.unistd : sysconf, _SC_PAGESIZE;
+
+        pageSize = cast(size_t) sysconf(_SC_PAGESIZE);
+    }
+    else version(Windows)
+    {
+        import core.sys.windows.windows : GetSystemInfo, SYSTEM_INFO;
+
+        SYSTEM_INFO si;
+        GetSystemInfo(&si);
+        pageSize = cast(size_t) si.dwPageSize;
+    }
+
     enum numPages = 2;
-    AscendingPageAllocator a = AscendingPageAllocator(2);
-    void[] b = a.allocate(1);
+    AscendingPageAllocator a = AscendingPageAllocator(numPages * pageSize);
+    void[] b = a.allocate((numPages + 1) * pageSize);
+    assert(b is null);
+    b = a.allocate(1);
     assert(b.length == 1);
-    assert(a.getAvailableSize() == 4096);
+    assert(a.getAvailableSize() == pageSize);
     a.deallocateAll();
     assert(!a.data && !a.offset);
 }
