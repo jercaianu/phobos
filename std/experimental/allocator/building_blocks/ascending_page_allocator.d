@@ -144,6 +144,21 @@ public:
         return cast(void[]) result[0 .. n];
     }
 
+    void[] alignedAllocate(size_t n, uint a)
+    {
+        void* alignedStart = cast(void *) ((cast(size_t) offset).roundUpToAlignment(a));
+        size_t goodSize = goodAllocSize(n);
+        if (goodSize > numPages * pageSize || alignedStart - data > numPages * pageSize - goodSize)
+            return null;
+
+        auto oldOffset = offset;
+        offset = alignedStart;
+        auto result = allocate(n);
+        if (!result)
+            offset = oldOffset;
+        return result;
+    }
+
     /**
     Rounds the requested size to the next multiple of the page size.
     */
