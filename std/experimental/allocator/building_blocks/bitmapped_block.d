@@ -129,6 +129,8 @@ struct BitmappedBlock(size_t theBlockSize, uint theAlignment = platformAlignment
     private BitVector _control;
     private void[] _payload;
     private size_t _startIdx;
+    private ulong _freshIdx;
+    private uint _freshBit;
     // }
 
     pure nothrow @safe @nogc
@@ -308,6 +310,11 @@ struct BitmappedBlock(size_t theBlockSize, uint theAlignment = platformAlignment
                     adjustStartIdx();
                 }
                 result = blocksFor(i, j, 1);
+                if (_startIdx >= _freshIdx)
+                {
+                    _freshIdx = _startIdx + (j + 1) / 64;
+                    j = (j + 1) % 64;
+                }
                 break switcharoo;
             }
             goto case 0; // fall through
@@ -322,6 +329,29 @@ struct BitmappedBlock(size_t theBlockSize, uint theAlignment = platformAlignment
         }
         return result.ptr ? result.ptr[0 .. s] : null;
     }
+
+    void[] allocateFresh(const size_t s)
+    {
+        const blocks = s.divideRoundUp(blockSize);
+        if (blocks != 1)
+            return null;
+
+        if (_freshIdx >= _control.rep.length)
+            return null;
+
+        _control.rep[_freshIdx] |= ((1UL << 63) >> _freshBit);
+        void[] result = blocksFor(_freshIdx, _freshBit, 1);
+        _freshBit++;
+
+        if (_freshBit == 64)
+        {
+            _freshBit = 0;
+            _freshIdx++;
+        }
+
+        return result.ptr ? result.ptr[0 .. s] : null;
+    }
+
 
     /**
     Allocates a block with specified alignment $(D a). The alignment must be a
@@ -461,6 +491,11 @@ struct BitmappedBlock(size_t theBlockSize, uint theAlignment = platformAlignment
             if (j < 64)
             {
                 // yay, found stuff
+                if (i >= _freshIdx)
+                {
+                    _freshIdx = i + (j + 1) / 64;
+                    _freshBit = (j + 1) % 64;
+                }
                 setBits(_control.rep[i], 64 - j - blocks, 63 - j);
                 return blocksFor(i, j, blocks);
             }
@@ -474,6 +509,11 @@ struct BitmappedBlock(size_t theBlockSize, uint theAlignment = platformAlignment
             if (allocateAtFront(i + 1, needed))
             {
                 // yay, found a block crossing two words
+                if ((i + 1) >= _freshIdx)
+                {
+                    _freshIdx = i + 1 + (needed + 1) / 64;
+                    _freshBit = (needed + 1) % 64;
+                }
                 _control.rep[i] |= (1UL << available) - 1;
                 return blocksFor(i, 64 - available, blocks);
             }
@@ -493,6 +533,12 @@ struct BitmappedBlock(size_t theBlockSize, uint theAlignment = platformAlignment
         if (i == i.max) return null;
         // Allocate those bits
         _control[i .. i + blocks] = 1;
+        auto v = (i + blocks) / 64;
+        if (v >= _freshIdx)
+        {
+            _freshIdx = v + 1;
+            _freshBit = 0;
+        }
         return _payload[cast(size_t) (i * blockSize)
             .. cast(size_t) ((i + blocks) * blockSize)];
     }
@@ -552,9 +598,15 @@ struct BitmappedBlock(size_t theBlockSize, uint theAlignment = platformAlignment
         {
             return false;
         }
+
         // Expansion successful
         assert(p.ptr == b.ptr + blocksOld * blockSize);
         b = b.ptr[0 .. b.length + delta];
+        if (wordIdx + blocksNew - blocksOld >= _freshIdx)
+        {
+            _freshIdx = wordIdx + blocksNew - blocksOld + 1;
+            _freshBit = 0;
+        }
         return true;
     }
 
@@ -883,6 +935,106 @@ struct BitmappedBlock(size_t theBlockSize, uint theAlignment = platformAlignment
     testAllocateAll!(1)(0, 128);
     testAllocateAll!(1)(128 * 1, 128);
     testAllocateAll!(128 * 20)(13 * 128, 128);
+}
+
+@system unittest
+{
+    enum blocks = 100;
+    ubyte[blocks * 16 + blocks / 8 + 4] payload;
+    void[][blocks * 16 + blocks / 8 + 4] buf;
+    auto a = BitmappedBlock!(16, 16)(payload);
+
+    for (int i = 0; i < blocks; i++)
+    {
+        void[] b = a.allocateFresh(16);
+        assert(b.length == 16);
+        buf[i] = b;
+    }
+
+    assert(!a.allocate(16));
+    assert(!a.allocateFresh(16));
+
+    for (int i = 0; i < 10; i++)
+    {
+        assert(a.deallocate(buf[i]));
+    }
+
+    for (int i = 0; i < 10; i++)
+    {
+        assert(!a.allocateFresh(16));
+        assert(a.allocate(16).length == 16);
+    }
+
+    assert(!a.allocate(16));
+}
+
+@system unittest
+{
+    import std.experimental.allocator.mallocator : Mallocator;
+    import std.random;
+
+    auto numBlocks = [1, 64, 256];
+    enum blocks = 10000;
+    int iter = 0;
+
+    ubyte[] payload = cast(ubyte[]) Mallocator.instance.allocate(blocks * 16);
+    auto a = BitmappedBlock!(16, 16)(payload);
+    void[][] buf = cast(void[][]) Mallocator.instance.allocate((void[]).sizeof * 10000);
+
+    auto rnd = Random();
+    while(iter < blocks)
+    {
+        int event = uniform(0, 2, rnd);
+        int doExpand = uniform(0, 2, rnd);
+        int allocSize = numBlocks[uniform(0, 3, rnd)] * 16;
+        int expandSize = numBlocks[uniform(0, 3, rnd)] * 16;
+        int doDeallocate = uniform(0, 2, rnd);
+
+        void[] b;
+        // normal allocate
+        if (event) b = a.allocate(allocSize);
+        else b = a.allocateFresh(16);
+
+        if (!b)
+            break;
+
+        if (event) assert(b.length == allocSize);
+        else assert(b.length == 16);
+        buf[iter] = b;
+
+        auto oldSize = b.length;
+        if (doExpand && a.expand(b, expandSize))
+            assert(b.length == expandSize + oldSize);
+
+        if (doDeallocate)
+        {
+            assert(a.deallocate(b));
+            buf[iter] = null;
+        }
+
+        iter++;
+    }
+
+    while(iter < blocks)
+    {
+        void[] b = a.allocate(16);
+        buf[iter++] = b;
+        if (!b)
+            break;
+    }
+
+    assert(!a.allocate(16));
+    for (int i = 0; i < iter; i++)
+    {
+        if (buf[iter])
+        {
+            assert(a.deallocate(buf[iter]));
+        }
+    }
+
+    void[] b = a.allocate(16);
+    assert(b.length == 16);
+    assert(!a.allocateFresh(16));
 }
 
 // Test totalAllocation and goodAllocSize
