@@ -17,6 +17,7 @@ struct AlignedBlockList(size_t blockSize, ParentAllocator, size_t theAlignment =
     AlignedBlockNode *root;
     ParentAllocator parent;
     enum alignment = theAlignment;
+    enum mask = ~(alignment - 1);
 
     static if (hasMember!(ParentAllocator, "alignedAllocate"))
     void[] allocate(size_t n)
@@ -24,9 +25,21 @@ struct AlignedBlockList(size_t blockSize, ParentAllocator, size_t theAlignment =
         auto tmp = root;
         while (tmp) 
         {
-            auto result = tmp.bAlloc.allocate(n);
+            auto result = tmp.bAlloc.allocateFresh(n);
             if (result.length == n)
+            {
+                if (tmp != root)
+                {
+                    tmp.prev.next = tmp.next;
+                    tmp.next.prev = tmp.prev;
+
+                    tmp.next = root;
+                    tmp.prev = root.prev;
+                    root.prev.next = tmp;
+                    root.prev = tmp;
+                }
                 return result;
+            }
 
             tmp = tmp.next;
             if (tmp == root)
@@ -46,12 +59,11 @@ struct AlignedBlockList(size_t blockSize, ParentAllocator, size_t theAlignment =
             root.prev = newNode;
         }
         root = newNode;
-        return root.bAlloc.allocate(n);
+        return root.bAlloc.allocateFresh(n);
     }
 
     bool deallocate(void[] b)
     {
-        ulong mask = ~0xfff;
         ulong ptr = ((cast(ulong) b.ptr) & mask);
         AlignedBlockNode *node = cast(AlignedBlockNode*) ptr;
         return node.bAlloc.deallocate(b);
