@@ -361,8 +361,9 @@ struct BitmappedBlock(size_t theBlockSize, uint theAlignment = platformAlignment
         {
             _control[_freshBit .. _freshBit + blocks] = 1;
             _freshBit += blocks;
+            return result[0 .. s];
         }
-        return result;
+        return null;
     }
 
     /**
@@ -680,7 +681,6 @@ struct BitmappedBlock(size_t theBlockSize, uint theAlignment = platformAlignment
         b = begin[0 .. end - begin];
         // Round up size to multiple of block size
         auto blocks = b.length.divideRoundUp(blockSize);
-        assert(blocks == 1);
         // Get into details
         auto wordIdx = blockIdx / 64, msbIdx = cast(uint) (blockIdx % 64);
         if (_startIdx > wordIdx) _startIdx = wordIdx;
@@ -1027,6 +1027,93 @@ struct BitmappedBlock(size_t theBlockSize, uint theAlignment = platformAlignment
     assert(!a.allocateFresh(16));
 }
 
+@system unittest
+{
+    import std.experimental.allocator.building_blocks.segregator : Segregator;
+    import std.experimental.allocator.mallocator : Mallocator;
+    import std.random;
+
+    alias SuperAllocator = Segregator!(
+        16,
+        BitmappedBlock!(16),
+        Segregator!(
+            32,
+            BitmappedBlock!(32),
+            Segregator!(
+                64,
+                BitmappedBlock!(64),
+                Segregator!(
+                    128,
+                    BitmappedBlock!(128),
+                    Segregator!(
+                        256,
+                        BitmappedBlock!(256),
+                        Segregator!(
+                            512,
+                            BitmappedBlock!(512),
+                            Segregator!(
+                                1024,
+                                BitmappedBlock!(1024),
+                                BitmappedBlock!(2048)
+                            )
+                        )
+                    )
+                )
+            )
+        )
+    );
+
+    auto maxSize = 2049;
+    auto bufSize = 10000;
+    enum numAllocs = 10000;
+    void[][numAllocs] buf;
+
+    import std.random;
+    auto rnd = Random(1000);
+    alias m = Mallocator.instance;
+    void[] b = m.allocate(bufSize);
+    SuperAllocator a;
+    a.allocatorForSize!2048 = BitmappedBlock!2048((cast(ubyte*) b.ptr)[0 .. b.length]);
+
+    b = m.allocate(bufSize);
+    a.allocatorForSize!1024 = BitmappedBlock!1024((cast(ubyte*) b.ptr)[0 .. b.length]);
+
+    b = m.allocate(bufSize);
+    a.allocatorForSize!512 = BitmappedBlock!512((cast(ubyte*) b.ptr)[0 .. b.length]);
+
+    b = m.allocate(bufSize);
+    a.allocatorForSize!256 = BitmappedBlock!256((cast(ubyte*) b.ptr)[0 .. b.length]);
+
+    b = m.allocate(bufSize);
+    a.allocatorForSize!128 = BitmappedBlock!128((cast(ubyte*) b.ptr)[0 .. b.length]);
+
+    b = m.allocate(bufSize);
+    a.allocatorForSize!64 = BitmappedBlock!64((cast(ubyte*) b.ptr)[0 .. b.length]);
+
+    b = m.allocate(bufSize);
+    a.allocatorForSize!32 = BitmappedBlock!32((cast(ubyte*) b.ptr)[0 .. b.length]);
+
+    b = m.allocate(bufSize);
+    a.allocatorForSize!16 = BitmappedBlock!16((cast(ubyte*) b.ptr)[0 .. b.length]);
+
+    for (int i = 0; i < numAllocs; i++)
+    {
+        int size = uniform(1, maxSize, rnd);
+        buf[i] = a.allocate(size);
+        if (buf[i])
+            assert(buf[i].length == size);
+
+    }
+
+    randomShuffle(buf[]);
+
+    for (int i = 0; i < numAllocs; i++)
+    {
+        if (buf[i])
+            assert(a.deallocate(buf[i]));
+
+    }
+}
 
 @system unittest
 {

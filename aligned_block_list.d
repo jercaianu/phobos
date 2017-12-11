@@ -12,6 +12,8 @@ import std.experimental.allocator.building_blocks.segregator;
      return rem ? s + base - rem : s;
  }
 
+int numAlloc;
+
 struct AlignedBlockList(size_t blockSize, ParentAllocator, ulong theAlignment = (1 << 23))
 {
     import std.traits : hasMember;
@@ -61,6 +63,7 @@ struct AlignedBlockList(size_t blockSize, ParentAllocator, ulong theAlignment = 
             {
                 tmp.prev.next = tmp.next;
                 tmp.next.prev = tmp.prev;
+                numAlloc--;
                 assert(parent.deallocate((cast(void*) tmp)[0 .. alignment]));
                 if (next == tmp)
                 {
@@ -78,6 +81,7 @@ struct AlignedBlockList(size_t blockSize, ParentAllocator, ulong theAlignment = 
             tmp = next;
         }
 
+        numAlloc++;
         void[] buf = parent.alignedAllocate(alignment, alignment);
         if (!buf)
             return null;
@@ -112,6 +116,17 @@ struct AlignedBlockList(size_t blockSize, ParentAllocator, ulong theAlignment = 
     }
 }
 
+ static void testrw(void[] b)
+ {
+     ubyte* buf = cast(ubyte*) b.ptr;
+     size_t len = (b.length).roundUpToMultipleOf(4096);
+     for (int i = 0; i < len; i += 4096)
+     {
+         buf[i] =  (cast(ubyte)i % 256);
+         assert(buf[i] == (cast(ubyte)i % 256));
+     }
+ }
+
 @system unittest
 {
     void[][1000] buf;
@@ -134,33 +149,37 @@ struct AlignedBlockList(size_t blockSize, ParentAllocator, ulong theAlignment = 
 
 @system unittest
 {
-    static void testrw(void[] b)
-    {
-        ubyte* buf = cast(ubyte*) b.ptr;
-        buf[0] = 100;
-        assert(buf[0] == 100);
-        buf[b.length - 1] = 101;
-        assert(buf[b.length - 1] == 101);
-    }
     alias SuperAllocator = Segregator!(
-            64,
-            AlignedBlockList!(64, AscendingPageAllocator*),
+            8,
+            AlignedBlockList!(8, AscendingPageAllocator*),
             Segregator!(
-                128,
-                AlignedBlockList!(128, AscendingPageAllocator*),
+                16,
+                AlignedBlockList!(16, AscendingPageAllocator*),
                 Segregator!(
-                    256,
-                    AlignedBlockList!(256, AscendingPageAllocator*),
+                    32,
+                    AlignedBlockList!(32, AscendingPageAllocator*),
                     Segregator!(
-                        512,
-                        AlignedBlockList!(512, AscendingPageAllocator*),
+                        64,
+                        AlignedBlockList!(64, AscendingPageAllocator*),
                         Segregator!(
-                            1024,
-                            AlignedBlockList!(1024, AscendingPageAllocator*),
+                            128,
+                            AlignedBlockList!(128, AscendingPageAllocator*),
                             Segregator!(
-                                2048,
-                                AlignedBlockList!(2048, AscendingPageAllocator*),
-                                AscendingPageAllocator*
+                                256,
+                                AlignedBlockList!(256, AscendingPageAllocator*),
+                                Segregator!(
+                                    512,
+                                    AlignedBlockList!(512, AscendingPageAllocator*),
+                                    Segregator!(
+                                        1024,
+                                        AlignedBlockList!(1024, AscendingPageAllocator*),
+                                        Segregator!(
+                                            2048,
+                                            AlignedBlockList!(2048, AscendingPageAllocator*),
+                                            AscendingPageAllocator*
+                                        )
+                                    )
+                                )
                             )
                         )
                     )
@@ -191,45 +210,175 @@ struct AlignedBlockList(size_t blockSize, ParentAllocator, ulong theAlignment = 
     }
 }
 
+void testSmall(Allocator)(ref Allocator a)
+{
+     import std.random;
+     auto rnd = Random(1000);
+
+     size_t numPages = 210000000;
+     enum testNum = 10000;
+     size_t numAlloc = 10;
+     void[][testNum] buf;
+     size_t pageSize = 4096;
+     int maxSize = 2049;
+     for (int i = 0; i < numPages; i += testNum)
+     {
+         for (int j = 0; j < testNum; j++)
+         {
+             auto size = uniform(1, maxSize, rnd);
+             buf[j] = a.allocate(size);
+             //assert(buf[j].length == sizes[ind]);
+             testrw(buf[j]);
+         }
+
+         randomShuffle(buf[]);
+
+         for (int j = 0; j < testNum; j++)
+         {
+             assert(a.deallocate(buf[j]));
+         }
+     }
+}
+
+void testLarge(Allocator)(ref Allocator a)
+{
+     import std.random;
+     auto rnd = Random(1000);
+
+     size_t numPages = 2100000;
+     enum testNum = 1000;
+     size_t numAlloc = 10;
+     void[][testNum] buf;
+     size_t pageSize = 4096;
+     ulong[] sizes = [4096 * 10, 4096 * 50, 4096 * 100];
+     for (int i = 0; i < numPages; i += testNum)
+     {
+         for (int j = 0; j < testNum; j++)
+         {
+             auto ind = uniform(0, sizes.length, rnd);
+             buf[j] = a.allocate(sizes[ind]);
+             assert(buf[j].length == sizes[ind]);
+             testrw(buf[j]);
+         }
+
+         randomShuffle(buf[]);
+
+         for (int j = 0; j < testNum; j++)
+         {
+             assert(a.deallocate(buf[j]));
+         }
+     }
+}
+
+void testLarge2()
+{
+     import std.random;
+     auto rnd = Random(1000);
+
+    static void testrw2(void* b, ulong len)
+    {
+        ubyte* buf = cast(ubyte*) b;
+        for (int i = 0; i < len; i += 4096)
+        {
+            buf[i] = 100;
+            assert(buf[i] == 100);
+        }
+    }
+
+     size_t numPages = 2100000;
+     enum testNum = 1000;
+     size_t numAlloc = 10;
+     void*[testNum] buf;
+     size_t pageSize = 4096;
+     ulong[] sizes = [4096 * 10, 4096 * 50, 4096 * 100];
+     for (int i = 0; i < numPages; i += testNum)
+     {
+         for (int j = 0; j < testNum; j++)
+         {
+             import core.stdc.stdlib : calloc;
+             auto ind = uniform(0, sizes.length, rnd);
+             buf[j] = calloc(sizes[ind], 1);
+             testrw2(buf[j], sizes[ind]);
+         }
+
+         randomShuffle(buf[]);
+
+         for (int j = 0; j < testNum; j++)
+         {
+             import core.stdc.stdlib : free;
+             free(buf[j]);
+         }
+     }
+}
+
+void testMixed(Allocator)(ref Allocator a)
+{
+     import std.random;
+     auto rnd = Random(1000);
+
+     size_t numPages = 21000000;
+     enum testNum = 1000;
+     size_t numAlloc = 10;
+     void[][testNum] buf;
+     size_t pageSize = 4096;
+     ulong[] sizes = [15, 16, 31, 32, 63, 64, 127, 128, 255, 256, 511, 512, 1023, 1024, 2047, 2048, 4096 * 10, 4096 * 50, 4096 * 100];
+     for (int i = 0; i < numPages; i += testNum)
+     {
+         for (int j = 0; j < testNum; j++)
+         {
+             auto ind = uniform(0, sizes.length, rnd);
+             buf[j] = a.allocate(sizes[ind]);
+             //assert(buf[j].length == sizes[ind]);
+             testrw(buf[j]);
+         }
+
+         randomShuffle(buf[]);
+
+         for (int j = 0; j < testNum; j++)
+         {
+             assert(a.deallocate(buf[j]));
+         }
+     }
+}
+
+
 void main()
 {
      import std.experimental.allocator.mallocator : Mallocator;
-     static void testrw(void[] b)
-     {
-         ubyte* buf = cast(ubyte*) b.ptr;
-         size_t len = (b.length).roundUpToMultipleOf(4096);
-         for (int i = 0; i < len; i += 4096)
-         {
-             buf[i] =  (cast(ubyte)i % 256);
-             assert(buf[i] == (cast(ubyte)i % 256));
-         }
-     }
 
-     alias SuperAllocator = Segregator!(
-             64,
-             AlignedBlockList!(64, AscendingPageAllocator*),
-             Segregator!(
-                 128,
-                 AlignedBlockList!(128, AscendingPageAllocator*),
-                 Segregator!(
-                     256,
-                     AlignedBlockList!(256, AscendingPageAllocator*),
-                     Segregator!(
-                         512,
-                         AlignedBlockList!(512, AscendingPageAllocator*),
-                         Segregator!(
-                             1024,
-                             AlignedBlockList!(1024, AscendingPageAllocator*),
-                             Segregator!(
-                                 2048,
-                                 AlignedBlockList!(2048, AscendingPageAllocator*),
-                                 AscendingPageAllocator*
-                             )
-                         )
-                     )
-                 )
-             )
-         );
+    alias SuperAllocator = Segregator!(
+            16,
+            AlignedBlockList!(16, AscendingPageAllocator*),
+            Segregator!(
+                32,
+                AlignedBlockList!(32, AscendingPageAllocator*),
+                Segregator!(
+                    64,
+                    AlignedBlockList!(64, AscendingPageAllocator*),
+                    Segregator!(
+                        128,
+                        AlignedBlockList!(128, AscendingPageAllocator*),
+                        Segregator!(
+                            256,
+                            AlignedBlockList!(256, AscendingPageAllocator*),
+                            Segregator!(
+                                512,
+                                AlignedBlockList!(512, AscendingPageAllocator*),
+                                Segregator!(
+                                    1024,
+                                    AlignedBlockList!(1024, AscendingPageAllocator*),
+                                    Segregator!(
+                                        2048,
+                                        AlignedBlockList!(2048, AscendingPageAllocator*),
+                                        AscendingPageAllocator*
+                                    )
+                                )
+                            )
+                        )
+                    )
+                )
+            )
+        );
 
      SuperAllocator a;
      size_t maxCapacity = 2621000000UL * 4096UL;
@@ -241,34 +390,11 @@ void main()
      a.allocatorForSize!256.parent = &pageAlloc;
      a.allocatorForSize!128.parent = &pageAlloc;
      a.allocatorForSize!64.parent = &pageAlloc;
+     a.allocatorForSize!32.parent = &pageAlloc;
+     a.allocatorForSize!16.parent = &pageAlloc;
+     a.allocatorForSize!8.parent = &pageAlloc;
+    alias aa = Mallocator.instance;
 
-     ulong[] sizes = [64, 128, 256, 512, 1024, 2048, 4096 * 100];
-
-     import std.random;
-     auto rnd = Random(1000);
-
-     size_t numPages = 21000000;
-     enum testNum = 10000;
-     size_t numAlloc = 10;
-     void[][testNum] buf;
-     size_t pageSize = 4096;
-     //AscendingPageAllocator a = AscendingPageAllocator(maxCapacity);
-     alias aa = Mallocator.instance;
-     for (int i = 0; i < numPages; i += testNum)
-     {
-         for (int j = 0; j < testNum; j++)
-         {
-             auto ind = uniform(sizes.length - 1, sizes.length, rnd);
-             buf[j] = aa.allocate(sizes[ind]);
-             assert(buf[j].length == sizes[ind]);
-             testrw(buf[j]);
-         }
-
-         randomShuffle(buf[]);
-
-         for (int j = 0; j < testNum; j++)
-         {
-             assert(aa.deallocate(buf[j]));
-         }
-     }
+    testLarge(a);
+    //testLarge2();
  }

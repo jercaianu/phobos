@@ -42,7 +42,7 @@ private:
     // On allocation requests, we allocate an extra 'extraAllocPages' pages
     // The address up to which we have permissions is stored in 'readWriteLimit'
     void* readWriteLimit;
-    enum extraAllocPages = 1024 * 4;
+    enum extraAllocPages = 1024 * 1024;
 
 public:
     enum uint alignment = 4096;
@@ -60,7 +60,7 @@ public:
 
             pageSize = cast(size_t) sysconf(_SC_PAGESIZE);
             numPages = n.roundUpToMultipleOf(cast(uint) pageSize) / pageSize;
-            data = mmap(null, pageSize * numPages, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
+            data = mmap(null, pageSize * numPages, PROT_NONE, MAP_ANON | MAP_PRIVATE, -1, 0);
             if (data == MAP_FAILED)
                 assert(0, "Failed to mmap memory");
         }
