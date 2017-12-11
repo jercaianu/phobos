@@ -42,7 +42,7 @@ private:
     // On allocation requests, we allocate an extra 'extraAllocPages' pages
     // The address up to which we have permissions is stored in 'readWriteLimit'
     void* readWriteLimit;
-    enum extraAllocPages = 1000;
+    enum extraAllocPages = 1024 * 4;
 
 public:
     enum uint alignment = 4096;
