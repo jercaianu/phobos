@@ -323,6 +323,7 @@ SRC_STD_EXP= \
 
 SRC_STD_EXP_ALLOC_BB= \
 	std\experimental\allocator\building_blocks\affix_allocator.d \
+	std\experimental\allocator\building_blocks\aligned_block_list.d \
 	std\experimental\allocator\building_blocks\allocator_list.d \
 	std\experimental\allocator\building_blocks\ascending_page_allocator.d \
 	std\experimental\allocator\building_blocks\bitmapped_block.d \
@@ -530,6 +531,7 @@ DOCS= \
 	$(DOC)\std_experimental_logger_nulllogger.html \
 	$(DOC)\std_experimental_logger.html \
 	$(DOC)\std_experimental_allocator_building_blocks_affix_allocator.html \
+	$(DOC)\std_experimental_allocator_building_blocks_aligned_block_list.html \
 	$(DOC)\std_experimental_allocator_building_blocks_allocator_list.html \
 	$(DOC)\std_experimental_allocator_building_blocks_ascending_page_allocator.html \
 	$(DOC)\std_experimental_allocator_building_blocks_bitmapped_block.html \
@@ -967,6 +969,10 @@ $(DOC)\std_experimental_logger.html : $(STDDOC) std\experimental\logger\package.
 $(DOC)\std_experimental_allocator_building_blocks_affix_allocator.html : $(STDDOC) std\experimental\allocator\building_blocks\affix_allocator.d
 	$(DMD) -c -o- $(DDOCFLAGS) -Df$(DOC)\std_experimental_allocator_building_blocks_affix_allocator.html \
 		$(STDDOC) std\experimental\allocator\building_blocks\affix_allocator.d
+
+$(DOC)\std_experimental_allocator_building_blocks_aligned_block_list.html : $(STDDOC) std\experimental\allocator\building_blocks\aligned_block_list.d
+	$(DMD) -c -o- $(DDOCFLAGS) -Df$(DOC)\std_experimental_allocator_building_blocks_aligned_block_list.html \
+		$(STDDOC) std\experimental\allocator\building_blocks\aligned_block_list.d
 
 $(DOC)\std_experimental_allocator_building_blocks_allocator_list.html : $(STDDOC) std\experimental\allocator\building_blocks\allocator_list.d
 	$(DMD) -c -o- $(DDOCFLAGS) -Df$(DOC)\std_experimental_allocator_building_blocks_allocator_list.html \

@@ -334,6 +334,37 @@ public:
         return result;
     }
 
+    static if (hasMember!(Allocator, "allocateFresh"))
+    {
+        static if (!(perCallFlags
+            & (Options.numAllocate | Options.numAllocateOK
+                | Options.bytesAllocated)))
+        {
+            void[] allocateFresh(size_t n)
+            { return allocateFreshImpl(n); }
+        }
+        else
+        {
+            void[] allocateFresh(string f = __FILE__, ulong n = __LINE__)
+                (size_t bytes)
+            { return allocateFreshImpl!(f, n)(bytes); }
+        }
+
+        private void[] allocateFreshImpl(string f = null, ulong n = 0)(size_t bytes)
+        {
+            auto result = parent.allocateFresh(bytes);
+            add!"bytesUsed"(result.length);
+            add!"bytesAllocated"(result.length);
+            immutable slack = this.goodAllocSize(result.length) - result.length;
+            add!"bytesSlack"(slack);
+            up!"numAllocate";
+            add!"numAllocateOK"(result.length == bytes); // allocating 0 bytes is OK
+            addPerCall!(f, n, "numAllocate", "numAllocateOK", "bytesAllocated")
+                (1, result.length == bytes, result.length);
+            return result;
+        }
+    }
+
     /**
     Defined whether or not $(D Allocator.expand) is defined. Affects
     per instance: $(D numExpand), $(D numExpandOK), $(D bytesExpanded),
