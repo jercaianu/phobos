@@ -306,10 +306,7 @@ public:
             return true;
         }
 
-        if (extraPages > numPages)
-            return false;
-
-        if (offset - data > pageSize * (numPages - extraPages))
+        if (extraPages > numPages || offset - data > pageSize * (numPages - extraPages))
             return false;
 
         void* newPtrEnd = b.ptr + goodSize + extraPages * pageSize;
@@ -367,7 +364,10 @@ public:
     }
 }
 
-shared struct SharedPageAllocator
+/**
+`SharedAscendingPageAllocator` is the threadsafe version of `AscendingPageAllocator`.
+*/
+shared struct SharedAscendingPageAllocator
 {
     import std.typecons : Ternary;
     import core.atomic : atomicOp, cas;
@@ -467,7 +467,7 @@ public:
         return allocateImpl(n, a);
     }
 
-    void[] allocateImpl(size_t n, uint a)
+    private void[] allocateImpl(size_t n, uint a)
     {
         import std.algorithm.comparison : min;
 
@@ -514,8 +514,7 @@ public:
             {
                 import core.sys.windows.windows : VirtualAlloc, MEM_COMMIT, PAGE_READWRITE;
 
-                auto ret = VirtualAlloc(localOldLimit, localExtraAlloc,
-                    MEM_COMMIT, PAGE_READWRITE);
+                auto ret = VirtualAlloc(localOldLimit, localExtraAlloc, MEM_COMMIT, PAGE_READWRITE);
                 if (!ret)
                     return null;
             }
@@ -575,6 +574,83 @@ public:
     else
     {
         static assert(0, "Unsupported OS");
+    }
+
+    /**
+    If the passed buffer is not the last allocation, then `delta` can be
+    at most the number of bytes left on the last page.
+    Otherwise, we can expand the last allocation until the end of the virtual
+    address range.
+    */
+    bool expand(ref void[] b, size_t delta)
+    {
+        import std.algorithm.comparison : min;
+
+        if (!delta) return true;
+        if (!b.ptr) return false;
+
+        size_t goodSize = goodAllocSize(b.length);
+        size_t bytesLeftOnPage = goodSize - b.length;
+        if (bytesLeftOnPage >= delta)
+        {
+            b = cast(void[]) b.ptr[0 .. b.length + delta];
+            return true;
+        }
+
+        lock.lock();
+        if (b.ptr + goodSize != offset)
+        {
+            lock.unlock();
+            return false;
+        }
+
+        size_t extraPages = goodAllocSize(delta - bytesLeftOnPage) / pageSize;
+        if (extraPages > numPages || offset - data > pageSize * (numPages - extraPages))
+        {
+            lock.unlock();
+            return false;
+        }
+
+        size_t localExtraAlloc;
+        void* localOldLimit;
+
+        offset = cast(shared(void*)) b.ptr + goodSize + extraPages * pageSize;
+        if (offset > readWriteLimit)
+        {
+            void* newReadWriteLimit = cast(void*) min(data + numPages * pageSize, offset + extraAllocPages * pageSize);
+            assert(newReadWriteLimit > readWriteLimit);
+
+            localExtraAlloc = newReadWriteLimit - readWriteLimit;
+            localOldLimit = cast(void*) readWriteLimit;
+            readWriteLimit = cast(shared(void*)) newReadWriteLimit;
+        }
+        lock.unlock();
+
+        if (localExtraAlloc != 0)
+        {
+            version(Posix)
+            {
+                import core.sys.posix.sys.mman : mprotect, PROT_READ, PROT_WRITE;
+
+                auto ret = mprotect(localOldLimit, localExtraAlloc, PROT_READ | PROT_WRITE);
+                if (ret != 0)
+                    return false;
+            }
+            else version(Windows)
+            {
+                import core.sys.windows.windows : VirtualAlloc, PAGE_READWRITE, MEM_COMMIT;
+                auto ret = VirtualAlloc(localOldLimit, localExtraAlloc, MEM_COMMIT, PAGE_READWRITE);
+                if (!ret)
+                    return false;
+            }
+            else
+            {
+                assert(0, "Unsupported OS version");
+            }
+        }
+
+        b = cast(void[]) b.ptr[0 .. b.length + delta];
+        return true;
     }
 
     /**
@@ -652,33 +728,51 @@ version (unittest)
 
 @system unittest
 {
+    static void testAlloc(Allocator)(ref Allocator a)
+    {
+        import std.traits : hasMember;
+
+        size_t pageSize = getPageSize();
+
+        void[] b1 = a.allocate(1);
+
+        static if (hasMember!(Allocator, "getAvailableSize"))
+        assert(a.getAvailableSize() == 3 * pageSize);
+
+        testrw(b1);
+        void[] b2 = a.allocate(2);
+
+        static if (hasMember!(Allocator, "getAvailableSize"))
+        assert(a.getAvailableSize() == 2 * pageSize);
+
+        testrw(b2);
+        void[] b3 = a.allocate(pageSize + 1);
+
+        static if (hasMember!(Allocator, "getAvailableSize"))
+        assert(a.getAvailableSize() == 0);
+
+        testrw(b3);
+        assert(b1.length == 1);
+        assert(b2.length == 2);
+        assert(b3.length == pageSize + 1);
+
+        assert(a.offset - a.data == 4 * pageSize);
+        void[] b4 = a.allocate(4);
+        assert(!b4);
+
+        a.deallocate(b1);
+        assert(a.data);
+        a.deallocate(b2);
+        assert(a.data);
+        a.deallocate(b3);
+    }
+
     size_t pageSize = getPageSize();
     AscendingPageAllocator a = AscendingPageAllocator(4 * pageSize);
-    void[] b1 = a.allocate(1);
-    assert(a.getAvailableSize() == 3 * pageSize);
-    testrw(b1);
+    shared SharedAscendingPageAllocator aa = SharedAscendingPageAllocator(4 * pageSize);
 
-    void[] b2 = a.allocate(2);
-    assert(a.getAvailableSize() == 2 * pageSize);
-    testrw(b2);
-
-    void[] b3 = a.allocate(pageSize + 1);
-    assert(a.getAvailableSize() == 0);
-    testrw(b3);
-
-    assert(b1.length == 1);
-    assert(b2.length == 2);
-    assert(b3.length == pageSize + 1);
-
-    assert(a.offset - a.data == 4 * pageSize);
-    void[] b4 = a.allocate(4);
-    assert(!b4);
-
-    a.deallocate(b1);
-    assert(a.data);
-    a.deallocate(b2);
-    assert(a.data);
-    a.deallocate(b3);
+    testAlloc(a);
+    testAlloc(aa);
 }
 
 @system unittest
@@ -718,61 +812,79 @@ version (unittest)
 
 @system unittest
 {
+    static void testAlloc(Allocator)(ref Allocator a)
+    {
+        import std.traits : hasMember;
+
+        size_t pageSize = getPageSize();
+        size_t numPages = 5;
+        uint alignment = cast(uint) pageSize;
+
+        void[] b1 = a.allocate(pageSize / 2);
+        assert(b1.length == pageSize / 2);
+
+        void[] b2 = a.alignedAllocate(pageSize / 2, alignment);
+        assert(a.expand(b1, pageSize / 2));
+        assert(a.expand(b1, 0));
+        assert(!a.expand(b1, 1));
+        testrw(b1);
+
+        assert(a.expand(b2, pageSize / 2));
+        testrw(b2);
+        assert(b2.length == pageSize);
+
+        static if(hasMember!(Allocator, "getAvailableSize"))
+        assert(a.getAvailableSize() == pageSize * 3);
+
+        void[] b3 = a.allocate(pageSize / 2);
+        assert(a.reallocate(b1, b1.length));
+        assert(a.reallocate(b2, b2.length));
+        assert(a.reallocate(b3, b3.length));
+
+        assert(b3.length == pageSize / 2);
+        testrw(b3);
+        assert(a.expand(b3, pageSize / 4));
+        testrw(b3);
+        assert(a.expand(b3, 0));
+        assert(b3.length == pageSize / 2 + pageSize / 4);
+        assert(a.expand(b3, pageSize / 4 - 1));
+        testrw(b3);
+        assert(a.expand(b3, 0));
+        assert(b3.length == pageSize - 1);
+        assert(a.expand(b3, 2));
+        assert(a.expand(b3, 0));
+
+        static if(hasMember!(Allocator, "getAvailableSize"))
+        assert(a.getAvailableSize() == pageSize);
+
+        assert(b3.length == pageSize + 1);
+        testrw(b3);
+
+        assert(a.reallocate(b1, b1.length));
+        assert(a.reallocate(b2, b2.length));
+        assert(a.reallocate(b3, b3.length));
+
+        assert(a.reallocate(b3, 2 * pageSize));
+        testrw(b3);
+        assert(a.reallocate(b1, pageSize - 1));
+        testrw(b1);
+        assert(a.expand(b1, 1));
+        testrw(b1);
+        assert(!a.expand(b1, 1));
+
+        a.deallocate(b1);
+        a.deallocate(b2);
+        a.deallocate(b3);
+    }
+
     size_t pageSize = getPageSize();
     size_t numPages = 5;
     uint alignment = cast(uint) pageSize;
     AscendingPageAllocator a = AscendingPageAllocator(numPages * pageSize);
+    shared SharedAscendingPageAllocator aa = SharedAscendingPageAllocator(numPages * pageSize);
 
-    void[] b1 = a.allocate(pageSize / 2);
-    assert(b1.length == pageSize / 2);
-
-    void[] b2 = a.alignedAllocate(pageSize / 2, alignment);
-    assert(a.expand(b1, pageSize / 2));
-    assert(a.expand(b1, 0));
-    assert(!a.expand(b1, 1));
-    testrw(b1);
-
-    assert(a.expand(b2, pageSize / 2));
-    testrw(b2);
-    assert(b2.length == pageSize);
-    assert(a.getAvailableSize() == pageSize * 3);
-
-    void[] b3 = a.allocate(pageSize / 2);
-    assert(a.reallocate(b1, b1.length));
-    assert(a.reallocate(b2, b2.length));
-    assert(a.reallocate(b3, b3.length));
-
-    assert(b3.length == pageSize / 2);
-    testrw(b3);
-    assert(a.expand(b3, pageSize / 4));
-    testrw(b3);
-    assert(a.expand(b3, 0));
-    assert(b3.length == pageSize / 2 + pageSize / 4);
-    assert(a.expand(b3, pageSize / 4 - 1));
-    testrw(b3);
-    assert(a.expand(b3, 0));
-    assert(b3.length == pageSize - 1);
-    assert(a.expand(b3, 2));
-    assert(a.expand(b3, 0));
-    assert(a.getAvailableSize() == pageSize);
-    assert(b3.length == pageSize + 1);
-    testrw(b3);
-
-    assert(a.reallocate(b1, b1.length));
-    assert(a.reallocate(b2, b2.length));
-    assert(a.reallocate(b3, b3.length));
-
-    assert(a.reallocate(b3, 2 * pageSize));
-    testrw(b3);
-    assert(a.reallocate(b1, pageSize - 1));
-    testrw(b1);
-    assert(a.expand(b1, 1));
-    testrw(b1);
-    assert(!a.expand(b1, 1));
-
-    a.deallocate(b1);
-    a.deallocate(b2);
-    a.deallocate(b3);
+    testAlloc(a);
+    testAlloc(aa);
 }
 
 @system unittest
@@ -783,6 +895,30 @@ version (unittest)
     enum allocPages = 10;
     void[][testNum] buf;
     AscendingPageAllocator a = AscendingPageAllocator(numPages * pageSize);
+
+    for (int i = 0; i < numPages; i += testNum * allocPages)
+    {
+        for (int j = 0; j < testNum; j++)
+        {
+            buf[j] = a.allocate(pageSize * allocPages);
+            testrw(buf[j]);
+        }
+
+        for (int j = 0; j < testNum; j++)
+        {
+            a.deallocate(buf[j]);
+        }
+    }
+}
+
+@system unittest
+{
+    size_t pageSize = getPageSize();
+    size_t numPages = 21000;
+    enum testNum = 100;
+    enum allocPages = 10;
+    void[][testNum] buf;
+    shared SharedAscendingPageAllocator a = SharedAscendingPageAllocator(numPages * pageSize);
 
     for (int i = 0; i < numPages; i += testNum * allocPages)
     {
@@ -867,33 +1003,28 @@ version (unittest)
     import core.thread : ThreadGroup;
     import core.atomic : atomicOp;
     import std.algorithm;
-    import std.stdio;
     enum numThreads = 100;
 
-    void[][3 * numThreads] buf;
-    ulong[3 * numThreads] ptrVals;
-    shared size_t count = 0;
-    shared SharedPageAllocator a = SharedPageAllocator(4096 * 300);
+    import core.internal.spinlock : SpinLock;
+    SpinLock lock = SpinLock(SpinLock.Contention.lengthy);
+
+
+    ulong[numThreads] ptrVals;
+    size_t count = 0;
+    shared SharedAscendingPageAllocator a = SharedAscendingPageAllocator(4096 * numThreads);
 
     void fun()
     {
-        void[] b = a.allocate(4096);
-        assert(b.length == 4096);
-        buf[count] = b;
-        ptrVals[count] = cast(ulong) b.ptr;
-        atomicOp!("+=")(count, 1);
+        void[] b = a.allocate(4000);
+        assert(b.length == 4000);
 
-        b = a.allocate(4096);
+        assert(a.expand(b, 96));
         assert(b.length == 4096);
-        buf[count] = b;
-        ptrVals[count] = cast(ulong) b.ptr;
-        atomicOp!("+=")(count, 1);
 
-        b = a.allocate(4096);
-        assert(b.length == 4096);
-        buf[count] = b;
+        lock.lock();
         ptrVals[count] = cast(ulong) b.ptr;
-        atomicOp!("+=")(count, 1);
+        count++;
+        lock.unlock();
     }
 
     auto tg = new ThreadGroup;
@@ -901,11 +1032,54 @@ version (unittest)
     {
         tg.create(&fun);
     }
-
     tg.joinAll();
 
     ptrVals[].sort();
-
-    for (int i = 0; i < numThreads * 3 - 1; i++)
+    for (int i = 0; i < numThreads - 1; i++) {
         assert(ptrVals[i] + 4096 == ptrVals[i + 1]);
+    }
+}
+
+@system unittest
+{
+    import core.thread : ThreadGroup;
+    import core.atomic : atomicOp;
+    import std.algorithm : sort;
+    import core.internal.spinlock : SpinLock;
+
+    SpinLock lock = SpinLock(SpinLock.Contention.lengthy);
+    enum numThreads = 100;
+    void[][numThreads] buf;
+    ulong[numThreads] ptrVals;
+    size_t count = 0;
+    shared SharedAscendingPageAllocator a = SharedAscendingPageAllocator(2 * 4096 * numThreads);
+
+    void fun()
+    {
+        void[] b = a.allocate(4000);
+        assert(b.length == 4000);
+
+        assert(a.expand(b, 96));
+        assert(b.length == 4096);
+
+        a.expand(b, 4096);
+        assert(b.length == 4096 || b.length == 8192);
+
+        lock.lock();
+        buf[count] = b;
+        count++;
+        lock.unlock();
+    }
+
+    auto tg = new ThreadGroup;
+    foreach (i; 0 .. numThreads)
+    {
+        tg.create(&fun);
+    }
+    tg.joinAll();
+
+    sort!((a, b) => a.ptr < b.ptr)(buf[0 .. 100]);
+    for (int i = 0; i < numThreads - 1; i++) {
+        assert(buf[i].ptr + buf[i].length == buf[i + 1].ptr);
+    }
 }
