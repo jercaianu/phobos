@@ -680,7 +680,6 @@ struct BitmappedBlock(size_t theBlockSize, uint theAlignment = platformAlignment
         b = begin[0 .. end - begin];
         // Round up size to multiple of block size
         auto blocks = b.length.divideRoundUp(blockSize);
-        assert(blocks == 1);
         // Get into details
         auto wordIdx = blockIdx / 64, msbIdx = cast(uint) (blockIdx % 64);
         if (_startIdx > wordIdx) _startIdx = wordIdx;
