@@ -158,6 +158,141 @@ struct AlignedBlockList(size_t blockSize, ParentAllocator, ulong theAlignment = 
     }
 }
 
+shared struct SharedAlignedBlockList(size_t blockSize, ParentAllocator, ulong theAlignment = (1 << 23))
+{
+    import std.traits : hasMember;
+    import std.typecons : Ternary;
+
+    struct AlignedBlockNode
+    {
+        AlignedBlockNode* next, prev;
+        StatsCollector!(BitmappedBlock!(blockSize), Options.bytesUsed) bAlloc;
+    }
+
+    static if (stateSize!ParentAllocator) ParentAllocator parent;
+    else alias parent = ParentAllocator.instance;
+
+    AlignedBlockNode *root;
+
+    enum ulong alignment = theAlignment;
+    enum ulong mask = ~(alignment - 1);
+
+    private void moveToFront(AlignedBlockNode* tmp)
+    {
+        if (tmp == root)
+            return;
+
+        tmp.prev.next = tmp.next;
+        tmp.next.prev = tmp.prev;
+
+        tmp.next = root;
+        tmp.prev = root.prev;
+        root.prev.next = tmp;
+        root.prev = tmp;
+
+        root = tmp;
+    }
+
+    private void removeNode(AlignedBlockNode* tmp)
+    {
+        AlignedBlockNode *next = tmp.next;
+
+        tmp.prev.next = tmp.next;
+        tmp.next.prev = tmp.prev;
+        assert(parent.deallocate((cast(void*) tmp)[0 .. alignment]));
+
+        if (tmp == root)
+        {
+            // There is only one node
+            if (next == tmp)
+            {
+                root = null;
+            }
+            else
+            {
+                root = next;
+            }
+        }
+    }
+
+    private bool insertNewNode()
+    {
+        void[] buf = parent.alignedAllocate(alignment, alignment);
+        if (!buf)
+            return false;
+
+        AlignedBlockNode* newNode = cast(AlignedBlockNode*) buf;
+        ubyte[] payload = ((cast(ubyte*) buf[AlignedBlockNode.sizeof .. $])[0 .. buf.length - AlignedBlockNode.sizeof]);
+        newNode.bAlloc.parent = BitmappedBlock!(blockSize)(payload);
+
+        if (root)
+        {
+            newNode.next = root;
+            root.prev.next = newNode;
+            newNode.prev = root.prev;
+            root.prev = newNode;
+        }
+        else
+        {
+            newNode.next = newNode;
+            newNode.prev = newNode;
+        }
+        root = newNode;
+        return true;
+    }
+
+    static if (hasMember!(ParentAllocator, "alignedAllocate"))
+    void[] allocate(size_t n)
+    {
+        import std.stdio;
+        if (root)
+        {
+            auto tmp = root;
+            while (true)
+            {
+                auto result = tmp.bAlloc.allocateFresh(n);
+                if (result.length == n)
+                {
+                    moveToFront(tmp);
+                    return result;
+                }
+
+                AlignedBlockNode *next = tmp.next;
+                if (tmp.bAlloc.bytesUsed == 0)
+                {
+                    removeNode(tmp);
+                    if (!root)
+                        break;
+                }
+
+                // Reached the end of the list
+                if (next == root)
+                    break;
+
+                tmp = next;
+            }
+        }
+
+        if (!insertNewNode())
+            return null;
+
+        return root.bAlloc.allocateFresh(n);
+    }
+
+    bool deallocate(void[] b)
+    {
+        ulong ptr = ((cast(ulong) b.ptr) & mask);
+        AlignedBlockNode *node = cast(AlignedBlockNode*) ptr;
+        return node.bAlloc.deallocate(b);
+    }
+
+    static if (hasMember!(ParentAllocator, "owns"))
+    Ternary owns(void[] b)
+    {
+        return parent.owns(b);
+    }
+}
+
 version (unittest)
 {
     static void testrw(void[] b)

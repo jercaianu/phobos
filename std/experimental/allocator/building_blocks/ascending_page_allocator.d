@@ -367,6 +367,257 @@ public:
     }
 }
 
+shared struct SharedPageAllocator
+{
+    import std.typecons : Ternary;
+    import core.atomic : atomicOp, cas;
+    import core.internal.spinlock : AlignedSpinLock, SpinLock;
+
+private:
+    size_t pageSize;
+    size_t numPages;
+
+    // The start of the virtual address range
+    shared void* data;
+
+    // Keeps track of there the next allocation should start
+    shared void* offset;
+
+    // On allocation requests, we allocate an extra 'extraAllocPages' pages
+    // The address up to which we have permissions is stored in 'readWriteLimit'
+    shared void* readWriteLimit;
+    enum extraAllocPages = 1024 * 1024;
+    AlignedSpinLock lock;
+
+public:
+    enum uint alignment = 4096;
+    /**
+    The allocator receives as a parameter the size in pages of the virtual
+    address range
+    */
+    this(size_t n)
+    {
+        lock = AlignedSpinLock(SpinLock.Contention.lengthy);
+        version(Posix)
+        {
+            import core.sys.posix.sys.mman : mmap, MAP_ANON, PROT_NONE,
+                MAP_PRIVATE, MAP_FAILED;
+            import core.sys.posix.unistd : sysconf, _SC_PAGESIZE;
+
+            pageSize = cast(size_t) sysconf(_SC_PAGESIZE);
+            numPages = n.roundUpToMultipleOf(cast(uint) pageSize) / pageSize;
+            data = cast(shared(void*)) mmap(null, pageSize * numPages, PROT_NONE, MAP_ANON | MAP_PRIVATE, -1, 0);
+            if (data == MAP_FAILED)
+                assert(0, "Failed to mmap memory");
+        }
+        else version(Windows)
+        {
+            import core.sys.windows.windows : VirtualAlloc, PAGE_NOACCESS,
+                MEM_RESERVE, GetSystemInfo, SYSTEM_INFO;
+
+            SYSTEM_INFO si;
+            GetSystemInfo(&si);
+            pageSize = cast(size_t) si.dwPageSize;
+            numPages = n.roundUpToMultipleOf(cast(uint) pageSize) / pageSize;
+            data = VirtualAlloc(null, pageSize * numPages, MEM_RESERVE, PAGE_NOACCESS);
+            if (!data)
+                assert(0, "Failed to VirtualAlloc memory");
+        }
+        else
+        {
+            static assert(0, "Unsupported OS version");
+        }
+
+        offset = data;
+        readWriteLimit = data;
+    }
+
+    /**
+    Rounds the allocation size to the next multiple of the page size.
+    The allocation only reserves a range of virtual pages but the actual
+    physical memory is allocated on demand, when accessing the memory.
+
+    Params:
+    n = Bytes to allocate
+
+    Returns:
+    `null` on failure or if the requested size exceeds the remaining capacity.
+    */
+    void[] allocate(size_t n)
+    {
+        return allocateImpl(n, 1);
+    }
+
+    /**
+    Rounds the allocation size to the next multiple of the page size.
+    The allocation only reserves a range of virtual pages but the actual
+    physical memory is allocated on demand, when accessing the memory.
+
+    The allocated memory is aligned to the specified alignment `a`.
+
+    Params:
+    n = Bytes to allocate
+    a = Alignment
+
+    Returns:
+    `null` on failure or if the requested size exceeds the remaining capacity.
+    */
+    void[] alignedAllocate(size_t n, uint a)
+    {
+        return allocateImpl(n, a);
+    }
+
+    void[] allocateImpl(size_t n, uint a)
+    {
+        import std.algorithm.comparison : min;
+
+        immutable pagedBytes = numPages * pageSize;
+        size_t goodSize = goodAllocSize(n);
+        if (goodSize > pagedBytes)
+            return null;
+
+        void* localResult;
+        void* localOldLimit;
+        size_t localExtraAlloc;
+
+        lock.lock();
+        void* alignedStart = cast(void*) roundUpToMultipleOf(cast(size_t) offset, a);
+        assert(alignedStart.alignedAt(a));
+        if (alignedStart - data > pagedBytes - goodSize)
+        {
+            lock.unlock();
+            return null;
+        }
+        offset = cast(shared(void*)) (alignedStart + goodSize);
+        localResult = alignedStart;
+        if (offset > readWriteLimit)
+        {
+            void* newReadWriteLimit = min(cast(void*) data + pagedBytes, cast(void*) offset + extraAllocPages * pageSize);
+            assert(newReadWriteLimit > readWriteLimit);
+            localExtraAlloc = newReadWriteLimit - readWriteLimit;
+            localOldLimit = cast(void*) readWriteLimit;
+            readWriteLimit = cast(shared(void*)) newReadWriteLimit;
+        }
+        lock.unlock();
+
+        if (localExtraAlloc != 0)
+        {
+            version(Posix)
+            {
+                import core.sys.posix.sys.mman : mprotect, PROT_WRITE, PROT_READ;
+
+                auto ret = mprotect(localOldLimit, localExtraAlloc, PROT_WRITE | PROT_READ);
+                if (ret != 0)
+                    return null;
+            }
+            else version(Windows)
+            {
+                import core.sys.windows.windows : VirtualAlloc, MEM_COMMIT, PAGE_READWRITE;
+
+                auto ret = VirtualAlloc(localOldLimit, localExtraAlloc,
+                    MEM_COMMIT, PAGE_READWRITE);
+                if (!ret)
+                    return null;
+            }
+            else
+            {
+                static assert(0, "Unsupported OS");
+            }
+        }
+
+        return cast(void[]) localResult[0 .. n];
+    }
+
+    /**
+    Rounds the requested size to the next multiple of the page size.
+    */
+    size_t goodAllocSize(size_t n)
+    {
+        return n.roundUpToMultipleOf(cast(uint) pageSize);
+    }
+
+    /**
+    Decommit all physical memory associated with the buffer given as parameter,
+    but keep the range of virtual addresses.
+
+    On POSIX systems `deallocate` calls `mmap` with `MAP_FIXED' a second time to decommit the memory.
+    On Windows, it uses `VirtualFree` with `MEM_DECOMMIT`.
+    */
+    version(Posix)
+    {
+        bool deallocate(void[] buf)
+        {
+            import core.sys.posix.sys.mman : mmap, MAP_FAILED, MAP_PRIVATE,
+                MAP_ANON, MAP_FIXED, PROT_NONE, munmap;
+
+            size_t goodSize = goodAllocSize(buf.length);
+            auto ptr = mmap(buf.ptr, goodSize, PROT_NONE, MAP_ANON | MAP_PRIVATE | MAP_FIXED, -1, 0);
+            if (ptr == MAP_FAILED)
+                 return false;
+
+            return true;
+        }
+    }
+    else version(Windows)
+    {
+        bool deallocate(void[] buf)
+        {
+            import core.sys.windows.windows : VirtualFree, MEM_RELEASE, MEM_DECOMMIT;
+
+            size_t goodSize = goodAllocSize(buf.length);
+            auto ret = VirtualFree(buf.ptr, goodSize, MEM_DECOMMIT);
+            if (ret == 0)
+                 return false;
+
+            return true;
+        }
+    }
+    else
+    {
+        static assert(0, "Unsupported OS");
+    }
+
+    /**
+    Returns `Ternary.yes` if the passed buffer is inside the range of virtual adresses.
+    Does not guarantee that the passed buffer is still valid.
+    */
+    Ternary owns(void[] buf)
+    {
+        if (!data)
+            return Ternary.no;
+        return Ternary(buf.ptr >= data && buf.ptr < buf.ptr + numPages * pageSize);
+    }
+
+    /**
+    Removes the memory mapping causing all physical memory to be decommited and
+    the virtual address space to be reclaimed.
+    */
+    bool deallocateAll()
+    {
+        version(Posix)
+        {
+            import core.sys.posix.sys.mman : munmap;
+            auto ret = munmap(cast(void*) data, numPages * pageSize);
+            if (ret != 0)
+                assert(0, "Failed to unmap memory, munmap failure");
+        }
+        else version(Windows)
+        {
+            import core.sys.windows.windows : VirtualFree, MEM_RELEASE;
+            auto ret = VirtualFree(cast(void*) data, 0, MEM_RELEASE);
+            if (ret == 0)
+                assert(0, "Failed to unmap memory, VirtualFree failure");
+        }
+        else
+        {
+            assert(0, "Unsupported OS version");
+        }
+        data = null;
+        offset = null;
+        return true;
+    }
+}
+
 version (unittest)
 {
     static void testrw(void[] b)
@@ -609,4 +860,52 @@ version (unittest)
 
     a.deallocateAll();
     assert(!a.data && !a.offset);
+}
+
+@system unittest
+{
+    import core.thread : ThreadGroup;
+    import core.atomic : atomicOp;
+    import std.algorithm;
+    import std.stdio;
+    enum numThreads = 100;
+
+    void[][3 * numThreads] buf;
+    ulong[3 * numThreads] ptrVals;
+    shared size_t count = 0;
+    shared SharedPageAllocator a = SharedPageAllocator(4096 * 300);
+
+    void fun()
+    {
+        void[] b = a.allocate(4096);
+        assert(b.length == 4096);
+        buf[count] = b;
+        ptrVals[count] = cast(ulong) b.ptr;
+        atomicOp!("+=")(count, 1);
+
+        b = a.allocate(4096);
+        assert(b.length == 4096);
+        buf[count] = b;
+        ptrVals[count] = cast(ulong) b.ptr;
+        atomicOp!("+=")(count, 1);
+
+        b = a.allocate(4096);
+        assert(b.length == 4096);
+        buf[count] = b;
+        ptrVals[count] = cast(ulong) b.ptr;
+        atomicOp!("+=")(count, 1);
+    }
+
+    auto tg = new ThreadGroup;
+    foreach (i; 0 .. numThreads)
+    {
+        tg.create(&fun);
+    }
+
+    tg.joinAll();
+
+    ptrVals[].sort();
+
+    for (int i = 0; i < numThreads * 3 - 1; i++)
+        assert(ptrVals[i] + 4096 == ptrVals[i + 1]);
 }
