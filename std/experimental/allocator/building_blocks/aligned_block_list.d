@@ -4,188 +4,13 @@ import std.experimental.allocator.common;
 import std.experimental.allocator.building_blocks.stats_collector;
 import std.experimental.allocator.building_blocks.bitmapped_block;
 
-/**
-`AlignedBlockList` is a safe and fast allocator for small objects, under certain constraints.
-If `ParentAllocator` implements `alignedAllocate`, and always returns fresh memory,
-`AlignedBlockList` will eliminate undefined behaviour (by not reusing memory),
-at the cost of higher fragmentation.
-
-The allocator holds internally a doubly linked list of `BitmappedBlock`, which will serve allocations
-in a most-recently-used fashion. Most recent allocators used for `allocate` calls, will be
-moved to the front of the list.
-
-Although allocations are in theory served in linear searching time, `deallocate` calls take
-$(BIGOH 1) time, by using aligned allocations. All `BitmappedBlock` are allocated at the alignment given
-as template parameter `theAlignment`. For a given pointer, this allows for quickly finding
-the `BitmappedBlock` owner using basic bitwise operations. The recommended alignment is 4MB or 8MB.
-
-The ideal use case for this allocator is in conjunction with `AscendingPageAllocator`, which
-always returns fresh memory on aligned allocations and `Segregator` for multiplexing across a wide
-range of block sizes.
-*/
-struct AlignedBlockList(size_t blockSize, ParentAllocator, ulong theAlignment = (1 << 23))
-{
-    import std.traits : hasMember;
-    import std.typecons : Ternary;
-
-    // The `BitmappedBlocks` are held in a doubly linked list of `AlignedBlockNode`
-    struct AlignedBlockNode
-    {
-        AlignedBlockNode* next, prev;
-        StatsCollector!(BitmappedBlock!(blockSize), Options.bytesUsed) bAlloc;
-    }
-
-    static if (stateSize!ParentAllocator) ParentAllocator parent;
-    else alias parent = ParentAllocator.instance;
-
-    AlignedBlockNode *root;
-
-    enum ulong alignment = theAlignment;
-
-    private void moveToFront(AlignedBlockNode* tmp)
-    {
-        if (tmp == root)
-            return;
-
-        tmp.prev.next = tmp.next;
-        tmp.next.prev = tmp.prev;
-
-        tmp.next = root;
-        tmp.prev = root.prev;
-        root.prev.next = tmp;
-        root.prev = tmp;
-
-        root = tmp;
-    }
-
-    private void removeNode(AlignedBlockNode* tmp)
-    {
-        AlignedBlockNode *next = tmp.next;
-
-        tmp.prev.next = tmp.next;
-        tmp.next.prev = tmp.prev;
-        assert(parent.deallocate((cast(void*) tmp)[0 .. alignment]));
-
-        if (tmp == root)
-        {
-            // There is only one node
-            if (next == tmp)
-            {
-                root = null;
-            }
-            else
-            {
-                root = next;
-            }
-        }
-    }
-
-    private bool insertNewNode()
-    {
-        void[] buf = parent.alignedAllocate(alignment, alignment);
-        if (buf is null)
-            return false;
-
-        AlignedBlockNode* newNode = cast(AlignedBlockNode*) buf;
-        ubyte[] payload = ((cast(ubyte*) buf[AlignedBlockNode.sizeof .. $])[0 .. buf.length - AlignedBlockNode.sizeof]);
-        newNode.bAlloc.parent = BitmappedBlock!(blockSize)(payload);
-
-        if (root)
-        {
-            newNode.next = root;
-            root.prev.next = newNode;
-            newNode.prev = root.prev;
-            root.prev = newNode;
-        }
-        else
-        {
-            newNode.next = newNode;
-            newNode.prev = newNode;
-        }
-        root = newNode;
-        return true;
-    }
-
-    /**
-    Returns a fresh chunk of memory of size `n`.
-    It finds the first node in the `AlignedBlockNode` list which has available memory,
-    and moves it to the front of the list.
-
-    All empty nodes which cannot return new memory, are removed from the list.
-    */
-    static if (hasMember!(ParentAllocator, "alignedAllocate"))
-    void[] allocate(size_t n)
-    {
-        if (root)
-        {
-            auto tmp = root;
-            while (true)
-            {
-                // Found available memory
-                auto result = tmp.bAlloc.allocateFresh(n);
-                if (result.length == n)
-                {
-                    moveToFront(tmp);
-                    return result;
-                }
-
-                AlignedBlockNode *next = tmp.next;
-                // This node is empty and cannot return new memory, delete it
-                if (tmp.bAlloc.bytesUsed == 0)
-                {
-                    removeNode(tmp);
-                    if (!root)
-                        break;
-                }
-
-                // Reached the end of the list
-                if (next == root)
-                    break;
-
-                tmp = next;
-            }
-        }
-
-        // Reached the end of the list with no memory found. Add a new node
-        if (!insertNewNode())
-            return null;
-
-        return root.bAlloc.allocateFresh(n);
-    }
-
-    /**
-    Marks for the given buffer for deallocation.
-    The actual memory is deallocated only when all memory inside the corresponding
-    `BitmappedBlock` is marked for deallocation.
-    */
-    bool deallocate(void[] b)
-    {
-        enum ulong mask = ~(alignment - 1);
-        ulong ptr = ((cast(ulong) b.ptr) & mask);
-        AlignedBlockNode *node = cast(AlignedBlockNode*) ptr;
-        return node.bAlloc.deallocate(b);
-    }
-
-    /**
-    Returns `Ternary.yes` if the buffer belongs to the parent allocator and
-    `Ternary.no` otherwise.
-    */
-    static if (hasMember!(ParentAllocator, "owns"))
-    Ternary owns(void[] b)
-    {
-        return parent.owns(b);
-    }
-}
-
-/**
-`SharedAlignedBlockList` is the threadsafe version of `AlignedBlockList`
-*/
-shared struct SharedAlignedBlockList(size_t blockSize, ParentAllocator, ulong theAlignment = (1 << 23))
+private mixin template AlignedBlockListImpl(bool isShared)
 {
     import std.traits : hasMember;
     import std.typecons : Ternary;
     import core.internal.spinlock : AlignedSpinLock, SpinLock;
 
+private:
     struct AlignedBlockNode
     {
         AlignedBlockNode* next, prev;
@@ -196,13 +21,13 @@ shared struct SharedAlignedBlockList(size_t blockSize, ParentAllocator, ulong th
     else alias parent = ParentAllocator.instance;
 
     AlignedBlockNode *root;
-    AlignedSpinLock lock = AlignedSpinLock(SpinLock.Contention.lengthy);
 
-    enum ulong alignment = theAlignment;
+    static if (isShared)
+    AlignedSpinLock lock = AlignedSpinLock(SpinLock.Contention.brief);
 
     private void moveToFront(AlignedBlockNode* tmp)
     {
-        AlignedBlockNode* localRoot = cast(AlignedBlockNode*) root;
+        auto localRoot = cast(AlignedBlockNode*) root;
         if (tmp == localRoot)
             return;
 
@@ -214,7 +39,7 @@ shared struct SharedAlignedBlockList(size_t blockSize, ParentAllocator, ulong th
         localRoot.prev.next = tmp;
         localRoot.prev = tmp;
 
-        root = cast(shared(AlignedBlockNode*)) tmp;
+        root = cast(typeof(root)) tmp;
     }
 
     private void removeNode(AlignedBlockNode* tmp)
@@ -234,7 +59,7 @@ shared struct SharedAlignedBlockList(size_t blockSize, ParentAllocator, ulong th
             }
             else
             {
-                root = cast(shared(AlignedBlockNode*)) next;
+                root = cast(typeof(root)) next;
             }
         }
     }
@@ -245,8 +70,8 @@ shared struct SharedAlignedBlockList(size_t blockSize, ParentAllocator, ulong th
         if (buf is null)
             return false;
 
-        AlignedBlockNode* localRoot = cast(AlignedBlockNode*) root;
-        AlignedBlockNode* newNode = cast(AlignedBlockNode*) buf;
+        auto localRoot = cast(AlignedBlockNode*) root;
+        auto newNode = cast(AlignedBlockNode*) buf;
         ubyte[] payload = ((cast(ubyte*) buf[AlignedBlockNode.sizeof .. $])[0 .. buf.length - AlignedBlockNode.sizeof]);
         newNode.bAlloc.parent = BitmappedBlock!(blockSize)(payload);
 
@@ -262,31 +87,46 @@ shared struct SharedAlignedBlockList(size_t blockSize, ParentAllocator, ulong th
             newNode.next = newNode;
             newNode.prev = newNode;
         }
-        root = cast(shared(AlignedBlockNode*)) newNode;
+        root = cast(typeof(root)) newNode;
         return true;
     }
 
-    /**
-    Returns a fresh chunk of memory of size `n`.
-    It finds the first node in the `AlignedBlockNode` list which has available memory,
-    and moves it to the front of the list.
+public:
+    enum ulong alignment = theAlignment;
 
-    All empty nodes which cannot return new memory, are removed from the list.
-    */
+    static if (hasMember!(ParentAllocator, "owns"))
+    Ternary owns(void[] b)
+    {
+        return parent.owns(b);
+    }
+
+    bool deallocate(void[] b)
+    {
+        enum ulong mask = ~(alignment - 1);
+        ulong ptr = ((cast(ulong) b.ptr) & mask);
+        AlignedBlockNode *node = cast(AlignedBlockNode*) ptr;
+        return node.bAlloc.deallocate(b);
+    }
+
     static if (hasMember!(ParentAllocator, "alignedAllocate"))
     void[] allocate(size_t n)
     {
+        static if (isShared)
         lock.lock();
+
         if (root)
         {
-            AlignedBlockNode* tmp = cast(AlignedBlockNode*) root;
+            auto tmp = cast(AlignedBlockNode*) root;
             while (true)
             {
                 auto result = tmp.bAlloc.allocateFresh(n);
                 if (result.length == n)
                 {
                     moveToFront(tmp);
+
+                    static if (isShared)
                     lock.unlock();
+
                     return result;
                 }
 
@@ -308,36 +148,117 @@ shared struct SharedAlignedBlockList(size_t blockSize, ParentAllocator, ulong th
 
         if (!insertNewNode())
         {
+            static if (isShared)
             lock.unlock();
             return null;
         }
 
         void[] result = (cast(AlignedBlockNode*) root).bAlloc.allocateFresh(n);
+        static if (isShared)
         lock.unlock();
         return result;
     }
+}
 
+version (StdDdoc)
+{
     /**
-    Marks for the given buffer for deallocation.
-    The actual memory is deallocated only when all memory inside the corresponding
-    `BitmappedBlock` is marked for deallocation.
+    `AlignedBlockList` is a safe and fast allocator for small objects, under certain constraints.
+    If `ParentAllocator` implements `alignedAllocate`, and always returns fresh memory,
+    `AlignedBlockList` will eliminate undefined behaviour (by not reusing memory),
+    at the cost of higher fragmentation.
+
+    The allocator holds internally a doubly linked list of `BitmappedBlock`, which will serve allocations
+    in a most-recently-used fashion. Most recent allocators used for `allocate` calls, will be
+    moved to the front of the list.
+
+    Although allocations are in theory served in linear searching time, `deallocate` calls take
+    $(BIGOH 1) time, by using aligned allocations. All `BitmappedBlock` are allocated at the alignment given
+    as template parameter `theAlignment`. For a given pointer, this allows for quickly finding
+    the `BitmappedBlock` owner using basic bitwise operations. The recommended alignment is 4MB or 8MB.
+
+    The ideal use case for this allocator is in conjunction with `AscendingPageAllocator`, which
+    always returns fresh memory on aligned allocations and `Segregator` for multiplexing across a wide
+    range of block sizes.
     */
-    bool deallocate(void[] b)
+    struct AlignedBlockList(size_t blockSize, ParentAllocator, ulong theAlignment = (1 << 23))
     {
-        enum ulong mask = ~(alignment - 1);
-        ulong ptr = ((cast(ulong) b.ptr) & mask);
-        AlignedBlockNode *node = cast(AlignedBlockNode*) ptr;
-        return node.bAlloc.deallocate(b);
+        import std.typecons : Ternary;
+        import std.traits : hasMember;
+
+        /**
+        Returns a fresh chunk of memory of size `n`.
+        It finds the first node in the `AlignedBlockNode` list which has available memory,
+        and moves it to the front of the list.
+
+        All empty nodes which cannot return new memory, are removed from the list.
+        */
+        static if (hasMember!(ParentAllocator, "alignedAllocate"))
+        void[] allocate(size_t n);
+
+        /**
+        Marks for the given buffer for deallocation.
+        The actual memory is deallocated only when all memory inside the corresponding
+        `BitmappedBlock` is marked for deallocation.
+        */
+        bool deallocate(void[] b);
+
+        /**
+        Returns `Ternary.yes` if the buffer belongs to the parent allocator and
+        `Ternary.no` otherwise.
+        */
+        static if (hasMember!(ParentAllocator, "owns"))
+        Ternary owns(void[] b);
     }
-
-    /**
-    Returns `Ternary.yes` if the buffer belongs to the parent allocator and
-    `Ternary.no` otherwise.
-    */
-    static if (hasMember!(ParentAllocator, "owns"))
-    Ternary owns(void[] b)
+}
+else
+{
+    struct AlignedBlockList(size_t blockSize, ParentAllocator, ulong theAlignment = (1 << 23))
     {
-        return parent.owns(b);
+        mixin AlignedBlockListImpl!false;
+    }
+}
+
+version (StdDdoc)
+{
+    /**
+    `SharedAlignedBlockList` is the threadsafe version of `AlignedBlockList`
+    */
+    shared struct SharedAlignedBlockList(size_t blockSize, ParentAllocator, ulong theAlignment = (1 << 23))
+    {
+        import std.typecons : Ternary;
+        import std.traits : hasMember;
+
+        /**
+        Returns a fresh chunk of memory of size `n`.
+        It finds the first node in the `AlignedBlockNode` list which has available memory,
+        and moves it to the front of the list.
+
+        All empty nodes which cannot return new memory, are removed from the list.
+        */
+        static if (hasMember!(ParentAllocator, "alignedAllocate"))
+        void[] allocate(size_t n);
+
+        /**
+        Marks for the given buffer for deallocation.
+        The actual memory is deallocated only when all memory inside the corresponding
+        `BitmappedBlock` is marked for deallocation.
+        */
+        bool deallocate(void[] b);
+
+        /**
+        Returns `Ternary.yes` if the buffer belongs to the parent allocator and
+        `Ternary.no` otherwise.
+        */
+        static if (hasMember!(ParentAllocator, "owns"))
+        Ternary owns(void[] b);
+    }
+}
+else
+{
+    shared struct SharedAlignedBlockList(size_t blockSize, ParentAllocator, ulong theAlignment = (1 << 23))
+    {
+        mixin AlignedBlockListImpl!true;
     }
 }
 
@@ -474,7 +395,7 @@ version (unittest)
                 )
             )
         );
-    enum numThreads = 1;
+    enum numThreads = 10;
 
     SuperAllocator a;
     shared SharedAscendingPageAllocator pageAlloc = SharedAscendingPageAllocator(4096 * 1024);
