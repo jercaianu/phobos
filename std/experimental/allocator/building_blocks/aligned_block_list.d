@@ -4,11 +4,12 @@ import std.experimental.allocator.common;
 import std.experimental.allocator.building_blocks.stats_collector;
 import std.experimental.allocator.building_blocks.bitmapped_block;
 
+// Common function implementation for thread local and shared AlignedBlockList
 private mixin template AlignedBlockListImpl(bool isShared)
 {
     import std.traits : hasMember;
     import std.typecons : Ternary;
-    import core.internal.spinlock : AlignedSpinLock, SpinLock;
+    import core.internal.spinlock : SpinLock;
 
 private:
     struct AlignedBlockNode
@@ -23,7 +24,7 @@ private:
     AlignedBlockNode *root;
 
     static if (isShared)
-    AlignedSpinLock lock = AlignedSpinLock(SpinLock.Contention.brief);
+    SpinLock lock = SpinLock(SpinLock.Contention.brief);
 
     private void moveToFront(AlignedBlockNode* tmp)
     {
@@ -103,6 +104,7 @@ public:
     bool deallocate(void[] b)
     {
         enum ulong mask = ~(alignment - 1);
+        // Round buffer to nearest `alignment` multiple
         ulong ptr = ((cast(ulong) b.ptr) & mask);
         AlignedBlockNode *node = cast(AlignedBlockNode*) ptr;
         return node.bAlloc.deallocate(b);
@@ -114,6 +116,7 @@ public:
         static if (isShared)
         lock.lock();
 
+        // Iterate through list and find first node which has fresh memory available
         if (root)
         {
             auto tmp = cast(AlignedBlockNode*) root;
@@ -131,6 +134,7 @@ public:
                 }
 
                 AlignedBlockNode *next = tmp.next;
+                // This node has no fresh memory available doesn't hold alive objects, remove it
                 if (tmp.bAlloc.bytesUsed == 0)
                 {
                     removeNode(tmp);
@@ -360,7 +364,7 @@ version (unittest)
     import std.experimental.allocator.building_blocks.segregator : Segregator;
     import std.random;
     import core.thread : ThreadGroup;
-    import core.internal.spinlock : AlignedSpinLock, SpinLock;
+    import core.internal.spinlock : SpinLock;
 
     alias SuperAllocator = Segregator!(
             16,

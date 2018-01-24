@@ -101,7 +101,7 @@ public:
     Returns:
     `null` on failure or if the requested size exceeds the remaining capacity.
     */
-    void[] allocate(size_t n)
+    void[] allocate(size_t n) @nogc nothrow
     {
         import std.algorithm.comparison : min;
 
@@ -163,7 +163,7 @@ public:
     Returns:
     `null` on failure or if the requested size exceeds the remaining capacity.
     */
-    void[] alignedAllocate(size_t n, uint a)
+    void[] alignedAllocate(size_t n, uint a) @nogc nothrow
     {
         void* alignedStart = cast(void*) roundUpToMultipleOf(cast(size_t) offset, a);
         assert(alignedStart.alignedAt(a));
@@ -184,7 +184,7 @@ public:
     /**
     Rounds the requested size to the next multiple of the page size.
     */
-    size_t goodAllocSize(size_t n)
+    size_t goodAllocSize(size_t n) @nogc nothrow
     {
         return n.roundUpToMultipleOf(cast(uint) pageSize);
     }
@@ -198,7 +198,7 @@ public:
     */
     version(Posix)
     {
-        bool deallocate(void[] buf)
+        bool deallocate(void[] buf) @nogc nothrow
         {
             import core.sys.posix.sys.mman : mmap, MAP_FAILED, MAP_PRIVATE,
                 MAP_ANON, MAP_FIXED, PROT_NONE, munmap;
@@ -214,7 +214,7 @@ public:
     }
     else version(Windows)
     {
-        bool deallocate(void[] buf)
+        bool deallocate(void[] buf) @nogc nothrow
         {
             import core.sys.windows.windows : VirtualFree, MEM_RELEASE, MEM_DECOMMIT;
 
@@ -236,7 +236,7 @@ public:
     Returns `Ternary.yes` if the passed buffer is inside the range of virtual adresses.
     Does not guarantee that the passed buffer is still valid.
     */
-    Ternary owns(void[] buf)
+    Ternary owns(void[] buf) @nogc nothrow
     {
         if (!data)
             return Ternary.no;
@@ -247,7 +247,7 @@ public:
     Removes the memory mapping causing all physical memory to be decommited and
     the virtual address space to be reclaimed.
     */
-    bool deallocateAll()
+    bool deallocateAll() @nogc nothrow
     {
         version(Posix)
         {
@@ -275,7 +275,7 @@ public:
     /**
     Returns the available size for further allocations in bytes.
     */
-    size_t getAvailableSize()
+    size_t getAvailableSize() @nogc nothrow
     {
         return numPages * pageSize + data - offset;
     }
@@ -286,7 +286,7 @@ public:
     Otherwise, we can expand the last allocation until the end of the virtual
     address range.
     */
-    bool expand(ref void[] b, size_t delta)
+    bool expand(ref void[] b, size_t delta) @nogc nothrow
     {
         import std.algorithm.comparison : min;
 
@@ -353,7 +353,7 @@ public:
     Returns `Ternary.yes` if the allocator does not contain any alive objects
     and `Ternary.no` otherwise.
     */
-    Ternary empty()
+    Ternary empty() @nogc nothrow
     {
         return Ternary(pagesUsed == 0);
     }
@@ -361,7 +361,7 @@ public:
     /**
     Unmaps the whole virtual address range on destruction.
     */
-    ~this()
+    ~this() @nogc nothrow
     {
         if (data)
             deallocateAll();
@@ -450,7 +450,7 @@ public:
     Returns:
     `null` on failure or if the requested size exceeds the remaining capacity.
     */
-    void[] allocate(size_t n)
+    void[] allocate(size_t n) @nogc nothrow
     {
         return allocateImpl(n, 1);
     }
@@ -469,12 +469,12 @@ public:
     Returns:
     `null` on failure or if the requested size exceeds the remaining capacity.
     */
-    void[] alignedAllocate(size_t n, uint a)
+    void[] alignedAllocate(size_t n, uint a) @nogc nothrow
     {
         return allocateImpl(n, a);
     }
 
-    private void[] allocateImpl(size_t n, uint a)
+    private void[] allocateImpl(size_t n, uint a) @nogc nothrow
     {
         import std.algorithm.comparison : min;
 
@@ -538,7 +538,7 @@ public:
     /**
     Rounds the requested size to the next multiple of the page size.
     */
-    size_t goodAllocSize(size_t n)
+    size_t goodAllocSize(size_t n) @nogc nothrow
     {
         return n.roundUpToMultipleOf(cast(uint) pageSize);
     }
@@ -552,7 +552,7 @@ public:
     */
     version(Posix)
     {
-        bool deallocate(void[] buf)
+        bool deallocate(void[] buf) @nogc nothrow
         {
             import core.sys.posix.sys.mman : mmap, MAP_FAILED, MAP_PRIVATE,
                 MAP_ANON, MAP_FIXED, PROT_NONE, munmap;
@@ -565,7 +565,7 @@ public:
             return true;
         }
     }
-    else version(Windows)
+    else version(Windows) @nogc nothrow
     {
         bool deallocate(void[] buf)
         {
@@ -590,7 +590,7 @@ public:
     Otherwise, we can expand the last allocation until the end of the virtual
     address range.
     */
-    bool expand(ref void[] b, size_t delta)
+    bool expand(ref void[] b, size_t delta) @nogc nothrow
     {
         import std.algorithm.comparison : min;
 
@@ -665,7 +665,7 @@ public:
     Returns `Ternary.yes` if the passed buffer is inside the range of virtual adresses.
     Does not guarantee that the passed buffer is still valid.
     */
-    Ternary owns(void[] buf)
+    Ternary owns(void[] buf) @nogc nothrow
     {
         if (!data)
             return Ternary.no;
@@ -676,7 +676,7 @@ public:
     Removes the memory mapping causing all physical memory to be decommited and
     the virtual address space to be reclaimed.
     */
-    bool deallocateAll()
+    bool deallocateAll() @nogc nothrow
     {
         version(Posix)
         {
