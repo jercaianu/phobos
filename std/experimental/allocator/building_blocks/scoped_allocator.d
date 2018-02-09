@@ -1,4 +1,7 @@
-///
+// Written in the D programming language.
+/**
+Source: $(PHOBOSSRC std/experimental/allocator/building_blocks/_scoped_allocator.d)
+*/
 module std.experimental.allocator.building_blocks.scoped_allocator;
 
 import std.experimental.allocator.common;
@@ -20,6 +23,7 @@ struct ScopedAllocator(ParentAllocator)
     static if (!stateSize!ParentAllocator)
     {
         // This test is available only for stateless allocators
+        version(StdUnittest)
         @system unittest
         {
             testAllocator!(() => ScopedAllocator());

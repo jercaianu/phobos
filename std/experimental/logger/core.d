@@ -1,4 +1,7 @@
-///
+// Written in the D programming language.
+/**
+Source: $(PHOBOSSRC std/experimental/logger/_core.d)
+*/
 module std.experimental.logger.core;
 
 import core.sync.mutex : Mutex;
@@ -1843,7 +1846,7 @@ package class TestLogger : Logger
     }
 }
 
-version(unittest) private void testFuncNames(Logger logger) @safe
+version(StdUnittest) private void testFuncNames(Logger logger) @safe
 {
     string s = "I'm here";
     logger.log(s);

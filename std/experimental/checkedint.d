@@ -1,3 +1,4 @@
+// Written in the D programming language.
 /**
 $(SCRIPT inhibitQuickIndex = 1;)
 
@@ -187,6 +188,7 @@ and `>>>=` is larger than the largest value representable by `T`.)
 )
 )
 
+Source: $(PHOBOSSRC std/experimental/_checkedint.d)
 */
 module std.experimental.checkedint;
 import std.traits : isFloatingPoint, isIntegral, isNumeric, isUnsigned, Unqual;
@@ -2618,7 +2620,7 @@ if (isIntegral!T && T.sizeof >= 4)
     testPow!ulong(3, 41);
 }
 
-version(unittest) private struct CountOverflows
+version(StdUnittest) private struct CountOverflows
 {
     uint calls;
     auto onOverflow(string op, Lhs)(Lhs lhs)
@@ -2643,7 +2645,7 @@ version(unittest) private struct CountOverflows
     }
 }
 
-version(unittest) private struct CountOpBinary
+version(StdUnittest) private struct CountOpBinary
 {
     uint calls;
     auto hookOpBinary(string op, Lhs, Rhs)(Lhs lhs, Rhs rhs)

@@ -132,7 +132,7 @@ else
     return _deleteme;
 }
 
-version (unittest) private struct TestAliasedString
+version(StdUnittest) private struct TestAliasedString
 {
     string get() @safe @nogc pure nothrow { return _s; }
     alias get this;
@@ -336,6 +336,7 @@ version (Posix) private void[] readImpl(const(char)[] name, const(FSChar)* namez
     import std.algorithm.comparison : min;
     import std.array : uninitializedArray;
     import std.conv : to;
+    import std.experimental.checkedint : checked;
 
     // A few internal configuration parameters {
     enum size_t
@@ -358,24 +359,25 @@ version (Posix) private void[] readImpl(const(char)[] name, const(FSChar)* namez
         : minInitialAlloc));
     void[] result = uninitializedArray!(ubyte[])(initialAlloc);
     scope(failure) GC.free(result.ptr);
-    size_t size = 0;
+
+    auto size = checked(size_t(0));
 
     for (;;)
     {
-        immutable actual = core.sys.posix.unistd.read(fd, result.ptr + size,
-                min(result.length, upTo) - size);
+        immutable actual = core.sys.posix.unistd.read(fd, result.ptr + size.get,
+                (min(result.length, upTo) - size).get);
         cenforce(actual != -1, name, namez);
         if (actual == 0) break;
         size += actual;
         if (size >= upTo) break;
         if (size < result.length) continue;
         immutable newAlloc = size + sizeIncrement;
-        result = GC.realloc(result.ptr, newAlloc, GC.BlkAttr.NO_SCAN)[0 .. newAlloc];
+        result = GC.realloc(result.ptr, newAlloc.get, GC.BlkAttr.NO_SCAN)[0 .. newAlloc.get];
     }
 
     return result.length - size >= maxSlackMemoryAllowed
-        ? GC.realloc(result.ptr, size, GC.BlkAttr.NO_SCAN)[0 .. size]
-        : result[0 .. size];
+        ? GC.realloc(result.ptr, size.get, GC.BlkAttr.NO_SCAN)[0 .. size.get]
+        : result[0 .. size.get];
 }
 
 
@@ -1488,6 +1490,7 @@ if (isInputRange!R && !isInfinite!R && isSomeChar!(ElementEncodingType!R))
 // - OS X, where the native filesystem (HFS+) stores filesystem
 //   timestamps with 1-second precision.
 version (FreeBSD) {} else
+version (DragonFlyBSD) {} else
 version (OSX) {} else
 @system unittest
 {
@@ -2288,7 +2291,7 @@ if (isConvertibleToString!R)
 
 @safe unittest
 {
-    import std.path : mkdir;
+    import std.file : mkdir;
     static assert(__traits(compiles, mkdir(TestAliasedString(null))));
 }
 
@@ -2644,6 +2647,7 @@ version(Posix) @system unittest // input range of dchars
 version(Windows) string getcwd()
 {
     import std.conv : to;
+    import std.experimental.checkedint : checked;
     /* GetCurrentDirectory's return value:
         1. function succeeds: the number of characters that are written to
     the buffer, not including the terminating null character.
@@ -2651,7 +2655,11 @@ version(Windows) string getcwd()
         3. the buffer (lpBuffer) is not large enough: the required size of
     the buffer, in characters, including the null-terminating character.
     */
-    wchar[4096] buffW = void; //enough for most common case
+    version(StdUnittest)
+        enum BUF_SIZE = 10;     // trigger reallocation code
+    else
+        enum BUF_SIZE = 4096;   // enough for most common case
+    wchar[BUF_SIZE] buffW = void;
     immutable n = cenforce(GetCurrentDirectoryW(to!DWORD(buffW.length), buffW.ptr),
             "getcwd");
     // we can do it because toUTFX always produces a fresh string
@@ -2661,10 +2669,11 @@ version(Windows) string getcwd()
     }
     else //staticBuff isn't enough
     {
-        auto ptr = cast(wchar*) malloc(wchar.sizeof * n);
+        auto cn = checked(n);
+        auto ptr = cast(wchar*) malloc((cn * wchar.sizeof).get);
         scope(exit) free(ptr);
-        immutable n2 = GetCurrentDirectoryW(n, ptr);
-        cenforce(n2 && n2 < n, "getcwd");
+        immutable n2 = GetCurrentDirectoryW(cn.get, ptr);
+        cenforce(n2 && n2 < cn, "getcwd");
         return ptr[0 .. n2].to!string;
     }
 }
@@ -2778,6 +2787,10 @@ else version (NetBSD)
     else version (NetBSD)
     {
         return readLink("/proc/self/exe");
+    }
+    else version (DragonFlyBSD)
+    {
+        return readLink("/proc/curproc/file");
     }
     else version (Solaris)
     {
@@ -3959,7 +3972,7 @@ public:
     type $(D string) if only the name is needed, or $(D DirEntry)
     if additional details are needed. The span _mode dictates how the
     directory is traversed. The name of each iterated directory entry
-    contains the absolute _path.
+    contains the absolute or relative _path (depending on _pathname).
 
     Params:
         path = The directory to iterate over.
@@ -4060,7 +4073,8 @@ auto dirEntries(string path, SpanMode mode, bool followSymlink = true)
     import std.algorithm.searching : startsWith;
     import std.array : array;
     import std.conv : to;
-    import std.path : dirEntries, buildPath, absolutePath;
+    import std.path : buildPath, absolutePath;
+    import std.file : dirEntries;
     import std.process : thisProcessID;
     import std.range.primitives : walkLength;
 
@@ -4347,11 +4361,6 @@ string tempDir() @trusted
             wchar[MAX_PATH + 2] buf;
             DWORD len = GetTempPathW(buf.length, buf.ptr);
             if (len) cache = buf[0 .. len].to!string;
-        }
-        else version(Android)
-        {
-            // Don't check for a global temporary directory as
-            // Android doesn't have one.
         }
         else version(Posix)
         {

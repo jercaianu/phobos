@@ -1,4 +1,7 @@
-///
+// Written in the D programming language.
+/**
+Source: $(PHOBOSSRC std/experimental/allocator/building_blocks/_free_tree.d)
+*/
 module std.experimental.allocator.building_blocks.free_tree;
 
 import std.experimental.allocator.common;
@@ -332,6 +335,7 @@ struct FreeTree(ParentAllocator)
         return true;
     }
 
+    version(StdUnittest)
     @system unittest // test a few simple configurations
     {
         import std.experimental.allocator.gc_allocator;
@@ -353,6 +357,7 @@ struct FreeTree(ParentAllocator)
         assert(a.formatSizes == "(_)", a.formatSizes);
     }
 
+    version(StdUnittest)
     @system unittest // build a complex free tree
     {
         import std.experimental.allocator.gc_allocator, std.range;

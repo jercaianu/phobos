@@ -1,9 +1,12 @@
-///
+// Written in the D programming language.
+/**
+Source: $(PHOBOSSRC std/experimental/allocator/building_blocks/_kernighan_ritchie.d)
+*/
 module std.experimental.allocator.building_blocks.kernighan_ritchie;
 import std.experimental.allocator.building_blocks.null_allocator;
 
 //debug = KRRegion;
-version(unittest) import std.conv : text;
+version(StdUnittest) import std.conv : text;
 debug(KRRegion) import std.stdio;
 
 // KRRegion
@@ -551,6 +554,7 @@ struct KRRegion(ParentAllocator = NullAllocator)
     }
 
     ///
+    version(StdUnittest)
     @system unittest
     {
         import std.experimental.allocator.gc_allocator : GCAllocator;

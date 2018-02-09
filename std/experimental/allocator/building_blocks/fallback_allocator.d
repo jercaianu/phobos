@@ -1,4 +1,7 @@
-///
+// Written in the D programming language.
+/**
+Source: $(PHOBOSSRC std/experimental/allocator/building_blocks/_fallback_allocator.d)
+*/
 module std.experimental.allocator.building_blocks.fallback_allocator;
 
 import std.experimental.allocator.common;
@@ -26,6 +29,7 @@ struct FallbackAllocator(Primary, Fallback)
 
     // Need both allocators to be stateless
     // This is to avoid using default initialized stateful allocators
+    version(StdUnittest)
     static if (!stateSize!Primary && !stateSize!Fallback)
     @system unittest
     {

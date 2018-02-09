@@ -49,9 +49,6 @@ $(TR $(TDNW Introspection) $(TD
     $(MYREF isNormal) $(MYREF isSubnormal) $(MYREF signbit) $(MYREF sgn)
     $(MYREF copysign) $(MYREF isPowerOf2)
 ))
-$(TR $(TDNW Complex Numbers) $(TD
-  $(MYREF abs) $(MYREF conj) $(MYREF sin) $(MYREF cos) $(MYREF expi)
-))
 $(TR $(TDNW Hardware Control) $(TD
     $(MYREF IeeeFlags) $(MYREF FloatingPointControl)
 ))
@@ -136,6 +133,7 @@ version (Win64)
 static import core.math;
 static import core.stdc.math;
 static import core.stdc.fenv;
+import std.range.primitives : isInputRange, ElementType;
 import std.traits; // CommonType, isFloatingPoint, isIntegral, isSigned, isUnsigned, Largest, Unqual
 
 version(LDC)
@@ -152,6 +150,8 @@ version (X86)    version = X86_Any;
 version (X86_64) version = X86_Any;
 version (PPC)    version = PPC_Any;
 version (PPC64)  version = PPC_Any;
+version (MIPS)   version = MIPS_Any;
+version (MIPS64) version = MIPS_Any;
 
 version(D_InlineAsm_X86)
 {
@@ -169,13 +169,13 @@ version (StaticallyHaveSSE)
 {
     private enum bool haveSSE = true;
 }
-else
+else version (X86)
 {
     static import core.cpuid;
     private alias haveSSE = core.cpuid.sse;
 }
 
-version(unittest)
+version(StdUnittest)
 {
     import core.stdc.stdio; // : sprintf;
 
@@ -507,6 +507,36 @@ enum real SQRT2 =      0x1.6a09e667f3bcc908b2fb1366ea958p+0L; /** $(SQRT)2 = 1.4
 enum real SQRT1_2 =    SQRT2/2;                               /** $(SQRT)$(HALF) = 0.707106... */
 // Note: Make sure the magic numbers in compiler backend for x87 match these.
 
+// it's quite tricky check for a type who will trigger a deprecation when accessed
+template isDeprecatedComplex(T)
+{
+    static if (__traits(isDeprecated, T))
+    {
+        enum isDeprecatedComplex = true;
+    }
+    else
+    {
+        enum m = T.mangleof;
+        // cfloat, cdouble, creal
+        // ifloat, idouble, ireal
+        enum isDeprecatedComplex = m == "q" || m == "r" || m == "c" ||
+                                   m == "o" || m == "p" || m == "j";
+    }
+}
+
+deprecated unittest
+{
+    static assert(isDeprecatedComplex!cfloat);
+    static assert(isDeprecatedComplex!cdouble);
+    static assert(isDeprecatedComplex!creal);
+    static assert(isDeprecatedComplex!ifloat);
+    static assert(isDeprecatedComplex!idouble);
+    static assert(isDeprecatedComplex!ireal);
+
+    static assert(!isDeprecatedComplex!float);
+    static assert(!isDeprecatedComplex!double);
+    static assert(!isDeprecatedComplex!real);
+}
 
 /***********************************
  * Calculates the absolute value of a number
@@ -514,43 +544,44 @@ enum real SQRT1_2 =    SQRT2/2;                               /** $(SQRT)$(HALF)
  * Params:
  *     Num = (template parameter) type of number
  *       x = real number value
- *       z = complex number value
- *       y = imaginary number value
  *
  * Returns:
  *     The absolute value of the number.  If floating-point or integral,
- *     the return type will be the same as the input; if complex or
- *     imaginary, the returned value will be the corresponding floating
- *     point type.
- *
- * For complex numbers, abs(z) = sqrt( $(POWER z.re, 2) + $(POWER z.im, 2) )
- * = hypot(z.re, z.im).
+ *     the return type will be the same as the input;
  */
-Num abs(Num)(Num x) @safe pure nothrow
-if (is(typeof(Num.init >= 0)) && is(typeof(-Num.init)) &&
-    !(is(Num* : const(ifloat*)) || is(Num* : const(idouble*))
-    || is(Num* : const(ireal*))))
+auto abs(Num)(Num x)
+// workaround for https://issues.dlang.org/show_bug.cgi?id=18251
+//if (!isDeprecatedComplex!Num &&
+    //(is(typeof(Num.init >= 0)) && is(typeof(-Num.init)) ||
+    //(is(Unqual!Num == short) || is(Unqual!Num == byte))))
 {
     static if (isFloatingPoint!(Num))
         return fabs(x);
     else
-        return x >= 0 ? x : -x;
+    {
+        static if (is(Unqual!Num == short) || is(Unqual!Num == byte))
+            return x >= 0 ? x : cast(Num) -int(x);
+        else
+            return x >= 0 ? x : -x;
+    }
 }
 
-/// ditto
-auto abs(Num)(Num z) @safe pure nothrow @nogc
-if (is(Num* : const(cfloat*)) || is(Num* : const(cdouble*))
-    || is(Num* : const(creal*)))
+import std.meta : AliasSeq;
+deprecated("Please use std.complex")
+static foreach (Num; AliasSeq!(cfloat, cdouble, creal, ifloat, idouble, ireal))
 {
-    return hypot(z.re, z.im);
-}
-
-/// ditto
-auto abs(Num)(Num y) @safe pure nothrow @nogc
-if (is(Num* : const(ifloat*)) || is(Num* : const(idouble*))
-    || is(Num* : const(ireal*)))
-{
-    return fabs(y.im);
+    auto abs(Num z) @safe pure nothrow @nogc
+    {
+        enum m = Num.mangleof;
+        // cfloat, cdouble, creal
+        static if (m == "q" || m == "r" || m == "c")
+            return hypot(z.re, z.im);
+        // ifloat, idouble, ireal
+        else static if (m == "o" || m == "p" || m == "j")
+            return fabs(z.im);
+        else
+            static assert(0, "Unsupported type: " ~ Num.stringof);
+    }
 }
 
 /// ditto
@@ -559,31 +590,52 @@ if (is(Num* : const(ifloat*)) || is(Num* : const(idouble*))
     assert(isIdentical(abs(-0.0L), 0.0L));
     assert(isNaN(abs(real.nan)));
     assert(abs(-real.infinity) == real.infinity);
-    assert(abs(-3.2Li) == 3.2L);
-    assert(abs(71.6Li) == 71.6L);
     assert(abs(-56) == 56);
     assert(abs(2321312L)  == 2321312L);
+}
+
+deprecated
+@safe pure nothrow @nogc unittest
+{
+    assert(abs(-3.2Li) == 3.2L);
+    assert(abs(71.6Li) == 71.6L);
     assert(abs(-1L+1i) == sqrt(2.0L));
 }
 
 @safe pure nothrow @nogc unittest
 {
+    short s = -8;
+    byte b = -8;
+    assert(abs(s) == 8);
+    assert(abs(b) == 8);
+    immutable(byte) c = -8;
+    assert(abs(c) == 8);
+}
+
+@safe pure nothrow @nogc unittest
+{
     import std.meta : AliasSeq;
-    foreach (T; AliasSeq!(float, double, real))
-    {
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
         T f = 3;
         assert(abs(f) == f);
         assert(abs(-f) == f);
-    }
-    foreach (T; AliasSeq!(cfloat, cdouble, creal))
-    {
+    }}
+}
+
+deprecated
+@safe pure nothrow @nogc unittest
+{
+    import std.meta : AliasSeq;
+    static foreach (T; AliasSeq!(cfloat, cdouble, creal))
+    {{
         T f = -12+3i;
         assert(abs(f) == hypot(f.re, f.im));
         assert(abs(-f) == hypot(f.re, f.im));
-    }
+    }}
 }
 
-/***********************************
+/*
  * Complex conjugate
  *
  *  conj(x + iy) = x - iy
@@ -591,6 +643,7 @@ if (is(Num* : const(ifloat*)) || is(Num* : const(idouble*))
  * Note that z * conj(z) = $(POWER z.re, 2) - $(POWER z.im, 2)
  * is always a real number
  */
+deprecated("Please use std.complex.conj")
 auto conj(Num)(Num z) @safe pure nothrow @nogc
 if (is(Num* : const(cfloat*)) || is(Num* : const(cdouble*))
     || is(Num* : const(creal*)))
@@ -603,7 +656,7 @@ if (is(Num* : const(cfloat*)) || is(Num* : const(cdouble*))
         return z.re - z.im*1fi;
 }
 
-/** ditto */
+deprecated("Please use std.complex.conj")
 auto conj(Num)(Num y) @safe pure nothrow @nogc
 if (is(Num* : const(ifloat*)) || is(Num* : const(idouble*))
     || is(Num* : const(ireal*)))
@@ -611,7 +664,7 @@ if (is(Num* : const(ifloat*)) || is(Num* : const(idouble*))
     return -y;
 }
 
-///
+deprecated
 @safe pure nothrow @nogc unittest
 {
     creal c = 7 + 3Li;
@@ -620,6 +673,7 @@ if (is(Num* : const(ifloat*)) || is(Num* : const(idouble*))
     assert(conj(z) == -z);
 }
 //Issue 14206
+deprecated
 @safe pure nothrow @nogc unittest
 {
     cdouble c = 7 + 3i;
@@ -628,6 +682,7 @@ if (is(Num* : const(ifloat*)) || is(Num* : const(idouble*))
     assert(conj(z) == -z);
 }
 //Issue 14206
+deprecated
 @safe pure nothrow @nogc unittest
 {
     cfloat c = 7f + 3fi;
@@ -710,7 +765,7 @@ float sin(float x) @safe pure nothrow @nogc { return sin(cast(real) x); }
     assert(psin != null);
 }
 
-/***********************************
+/*
  *  Returns sine for complex and imaginary arguments.
  *
  *  sin(z) = sin(z.re)*cosh(z.im) + cos(z.re)*sinh(z.im)i
@@ -718,45 +773,49 @@ float sin(float x) @safe pure nothrow @nogc { return sin(cast(real) x); }
  * If both sin($(THETA)) and cos($(THETA)) are required,
  * it is most efficient to use expi($(THETA)).
  */
-creal sin(creal z) @safe pure nothrow @nogc
+deprecated("Use std.complex.sin")
+auto sin(creal z) @safe pure nothrow @nogc
 {
     const creal cs = expi(z.re);
     const creal csh = coshisinh(z.im);
     return cs.im * csh.re + cs.re * csh.im * 1i;
 }
 
-/** ditto */
-ireal sin(ireal y) @safe pure nothrow @nogc
+/* ditto */
+deprecated("Use std.complex.sin")
+auto sin(ireal y) @safe pure nothrow @nogc
 {
     return cosh(y.im)*1i;
 }
 
-///
+deprecated
 @safe pure nothrow @nogc unittest
 {
   assert(sin(0.0+0.0i) == 0.0);
   assert(sin(2.0+0.0i) == sin(2.0L) );
 }
 
-/***********************************
+/*
  *  cosine, complex and imaginary
  *
  *  cos(z) = cos(z.re)*cosh(z.im) - sin(z.re)*sinh(z.im)i
  */
-creal cos(creal z) @safe pure nothrow @nogc
+deprecated("Use std.complex.cos")
+auto cos(creal z) @safe pure nothrow @nogc
 {
     const creal cs = expi(z.re);
     const creal csh = coshisinh(z.im);
     return cs.re * csh.re - cs.im * csh.im * 1i;
 }
 
-/** ditto */
+/* ditto */
+deprecated("Use std.complex.cos")
 real cos(ireal y) @safe pure nothrow @nogc
 {
     return cosh(y.im);
 }
 
-///
+deprecated
 @safe pure nothrow @nogc unittest
 {
     assert(cos(0.0+0.0i)==1.0);
@@ -867,8 +926,10 @@ Lret: {}
     }
     else
     {
+        enum realFormat = floatTraits!real.realFormat;
+
         // Coefficients for tan(x) and PI/4 split into three parts.
-        static if (floatTraits!real.realFormat == RealFormat.ieeeQuadruple)
+        static if (realFormat == RealFormat.ieeeQuadruple)
         {
             static immutable real[6] P = [
                 2.883414728874239697964612246732416606301E10L,
@@ -932,9 +993,10 @@ Lret: {}
         // Compute x mod PI/4.
         real y = floor(x / PI_4);
         // Strip high bits of integer part.
-        real z = ldexp(y, -4);
-        // Compute y - 16 * (y / 16).
-        z = y - ldexp(floor(z), 4);
+        enum numHighBits = (realFormat == RealFormat.ieeeDouble ? 3 : 4);
+        real z = ldexp(y, -numHighBits);
+        // Compute y - 2^numHighBits * (y / 2^numHighBits).
+        z = y - ldexp(floor(z), numHighBits);
 
         // Integer and fraction part modulo one octant.
         int j = cast(int)(z);
@@ -949,7 +1011,8 @@ Lret: {}
         z = ((x - y * P1) - y * P2) - y * P3;
         const real zz = z * z;
 
-        if (zz > 1.0e-20L)
+        enum zzThreshold = (realFormat == RealFormat.ieeeDouble ? 1.0e-14L : 1.0e-20L);
+        if (zz > zzThreshold)
             y = z + z * (zz * poly(zz, P) / poly(zz, Q));
         else
             y = z;
@@ -1402,7 +1465,8 @@ package:
 /* Returns cosh(x) + I * sinh(x)
  * Only one call to exp() is performed.
  */
-creal coshisinh(real x) @safe pure nothrow @nogc
+deprecated("Use std.complex")
+auto coshisinh(real x) @safe pure nothrow @nogc
 {
     // See comments for cosh, sinh.
     if (fabs(x) > real.mant_dig * LN2)
@@ -1417,6 +1481,7 @@ creal coshisinh(real x) @safe pure nothrow @nogc
     }
 }
 
+deprecated
 @safe pure nothrow @nogc unittest
 {
     creal c = coshisinh(3.0L);
@@ -1619,7 +1684,8 @@ real sqrt(real x) @nogc @safe pure nothrow { pragma(inline, true); return core.m
     assert(psqrtr != null);
 }
 
-creal sqrt(creal z) @nogc @safe pure nothrow
+deprecated("Use std.complex.sqrt")
+auto sqrt(creal z) @nogc @safe pure nothrow
 {
     creal c;
     real x,y,w,r;
@@ -2524,13 +2590,14 @@ private real exp2Impl(real x) @nogc @trusted pure nothrow
 }
 
 
-/**
+/*
  * Calculate cos(y) + i sin(y).
  *
  * On many CPUs (such as x86), this is a very efficient operation;
  * almost twice as fast as calculating sin(y) and cos(y) separately,
  * and is the preferred method when both are required.
  */
+deprecated("Use std.complex.expi")
 creal expi(real y) @trusted pure nothrow @nogc
 {
     version(InlineAsm_X86_Any)
@@ -2562,7 +2629,7 @@ creal expi(real y) @trusted pure nothrow @nogc
     }
 }
 
-///
+deprecated
 @safe pure nothrow @nogc unittest
 {
     assert(expi(1.3e5L) == cos(1.3e5L) + sin(1.3e5L) * 1i);
@@ -2767,7 +2834,7 @@ if (isFloatingPoint!T)
 }
 
 ///
-@system unittest
+@safe unittest
 {
     int exp;
     real mantissa = frexp(123.456L, exp);
@@ -2796,8 +2863,8 @@ if (isFloatingPoint!T)
     import std.meta : AliasSeq;
     import std.typecons : tuple, Tuple;
 
-    foreach (T; AliasSeq!(real, double, float))
-    {
+    static foreach (T; AliasSeq!(real, double, float))
+    {{
         Tuple!(T, T, int)[] vals =     // x,frexp,exp
             [
              tuple(T(0.0),  T( 0.0 ), 0),
@@ -2847,21 +2914,21 @@ if (isFloatingPoint!T)
 
             }
         }
-    }
+    }}
 }
 
 @safe unittest
 {
     import std.meta : AliasSeq;
     void foo() {
-        foreach (T; AliasSeq!(real, double, float))
-        {
+        static foreach (T; AliasSeq!(real, double, float))
+        {{
             int exp;
             const T a = 1;
             immutable T b = 2;
             auto c = frexp(a, exp);
             auto d = frexp(b, exp);
-        }
+        }}
     }
 }
 
@@ -3045,12 +3112,12 @@ if (isIntegral!T && isSigned!T)
 alias FP_ILOGB0   = core.stdc.math.FP_ILOGB0;
 alias FP_ILOGBNAN = core.stdc.math.FP_ILOGBNAN;
 
-@system nothrow @nogc unittest
+@safe nothrow @nogc unittest
 {
     import std.meta : AliasSeq;
     import std.typecons : Tuple;
-    foreach (F; AliasSeq!(float, double, real))
-    {
+    static foreach (F; AliasSeq!(float, double, real))
+    {{
         alias T = Tuple!(F, int);
         T[13] vals =   // x, ilogb(x)
         [
@@ -3073,7 +3140,7 @@ alias FP_ILOGBNAN = core.stdc.math.FP_ILOGBNAN;
         {
             assert(ilogb(elem[0]) == elem[1]);
         }
-    }
+    }}
 
     // min_normal and subnormals
     assert(ilogb(-float.min_normal) == -126);
@@ -3122,8 +3189,8 @@ float ldexp(float n, int exp) @safe pure nothrow @nogc { return ldexp(cast(real)
 @nogc @safe pure nothrow unittest
 {
     import std.meta : AliasSeq;
-    foreach (T; AliasSeq!(float, double, real))
-    {
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
         T r;
 
         r = ldexp(3.0L, 3);
@@ -3136,7 +3203,7 @@ float ldexp(float n, int exp) @safe pure nothrow @nogc { return ldexp(cast(real)
         int exp = 3;
         r = ldexp(n, exp);
         assert(r == 24);
-    }
+    }}
 }
 
 @safe pure nothrow @nogc unittest
@@ -3627,7 +3694,7 @@ real log2(real x) @safe pure nothrow @nogc
 }
 
 ///
-@system unittest
+@safe unittest
 {
     assert(approxEqual(log2(1024.0L), 10));
 }
@@ -4246,8 +4313,8 @@ if (is(typeof(rfunc(F.init)) : F) && isFloatingPoint!F)
 {
     import std.meta : AliasSeq;
 
-    foreach (F; AliasSeq!(real, double, float))
-    {
+    static foreach (F; AliasSeq!(real, double, float))
+    {{
         const maxL10 = cast(int) F.max.log10.floor;
         const maxR10 = pow(cast(F) 10, maxL10);
         assert((cast(F) 0.9L * maxR10).quantize!10(maxL10) ==  maxR10);
@@ -4259,7 +4326,7 @@ if (is(typeof(rfunc(F.init)) : F) && isFloatingPoint!F)
         assert((-F.min_normal).quantize(F.max) == 0);
         assert(F.min_normal.quantize(F.min_normal) == F.min_normal);
         assert((-F.min_normal).quantize(F.min_normal) == -F.min_normal);
-    }
+    }}
 }
 
 /******************************************
@@ -4816,7 +4883,7 @@ public:
     assert(ieeeFlags == f);
 }
 
-@system unittest
+version(D_HardFloat) @system unittest
 {
     import std.meta : AliasSeq;
 
@@ -4826,8 +4893,8 @@ public:
         bool function() ieeeCheck;
     }
 
-    foreach (T; AliasSeq!(float, double, real))
-    {
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
         T x; /* Needs to be here to trick -O. It would optimize away the
             calculations if x were local to the function literals. */
         auto tests = [
@@ -4859,10 +4926,22 @@ public:
             test.action();
             assert(test.ieeeCheck());
         }
-    }
+    }}
 }
 
 version(X86_Any)
+{
+    version = IeeeFlagsSupport;
+}
+else version(PPC_Any)
+{
+    version = IeeeFlagsSupport;
+}
+else version(MIPS_Any)
+{
+    version = IeeeFlagsSupport;
+}
+else version(AArch64)
 {
     version = IeeeFlagsSupport;
 }
@@ -5010,6 +5089,21 @@ struct FloatingPointControl
             allExceptions, /// ditto
         }
     }
+    else version(AArch64)
+    {
+        enum : ExceptionMask
+        {
+            inexactException      = 0x1000,
+            underflowException    = 0x0800,
+            overflowException     = 0x0400,
+            divByZeroException    = 0x0200,
+            invalidException      = 0x0100,
+            severeExceptions   = overflowException | divByZeroException
+                                 | invalidException,
+            allExceptions      = severeExceptions | underflowException
+                                 | inexactException,
+        }
+    }
     else version(ARM)
     {
         enum : ExceptionMask
@@ -5034,6 +5128,21 @@ struct FloatingPointControl
             divByZeroException    = 0x0010,
             underflowException    = 0x0020,
             overflowException     = 0x0040,
+            invalidException      = 0x0080,
+            severeExceptions   = overflowException | divByZeroException
+                                 | invalidException,
+            allExceptions      = severeExceptions | underflowException
+                                 | inexactException,
+        }
+    }
+    else version(MIPS_Any)
+    {
+        enum : ExceptionMask
+        {
+            inexactException      = 0x0800,
+            divByZeroException    = 0x0400,
+            overflowException     = 0x0200,
+            underflowException    = 0x0100,
             invalidException      = 0x0080,
             severeExceptions   = overflowException | divByZeroException
                                  | invalidException,
@@ -5068,6 +5177,18 @@ public:
             return true;
         else version(PPC_Any)
             return true;
+        else version(MIPS_Any)
+            return true;
+        else version(AArch64)
+        {
+            auto oldState = getControlState();
+            // If exceptions are not supported, we set the bit but read it back as zero
+            // https://sourceware.org/git/?p=glibc.git;a=blob;f=sysdeps/aarch64/fpu/feenablxcpth.c
+            setControlState(oldState | (divByZeroException & allExceptions));
+            immutable result = (getControlState() & allExceptions) != 0;
+            setControlState(oldState);
+            return result;
+        }
         else version(ARM)
         {
             auto oldState = getControlState();
@@ -5127,11 +5248,19 @@ private:
 
     bool initialized = false;
 
-    version(ARM)
+    version(AArch64)
+    {
+        alias ControlState = uint;
+    }
+    else version(ARM)
     {
         alias ControlState = uint;
     }
     else version(PPC_Any)
+    {
+        alias ControlState = uint;
+    }
+    else version(MIPS_Any)
     {
         alias ControlState = uint;
     }
@@ -5260,12 +5389,12 @@ private:
     ensureDefaults();
 }
 
-@system unittest // rounding
+version(D_HardFloat) @system unittest // rounding
 {
     import std.meta : AliasSeq;
 
-    foreach (T; AliasSeq!(float, double, real))
-    {
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
         FloatingPointControl fpctrl;
 
         fpctrl.rounding = FloatingPointControl.roundUp;
@@ -5297,7 +5426,7 @@ private:
 
         assert(u > d);
         assert(z == u);
-    }
+    }}
 }
 
 
@@ -5360,8 +5489,8 @@ if (isFloatingPoint!(X))
 {
     import std.meta : AliasSeq;
 
-    foreach (T; AliasSeq!(float, double, real))
-    {
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
         // CTFE-able tests
         assert(isNaN(T.init));
         assert(isNaN(-T.init));
@@ -5386,7 +5515,7 @@ if (isFloatingPoint!(X))
         f = cast(T) 53.6;
         assert(!isNaN(f));
         assert(!isNaN(-f));
-    }
+    }}
 }
 
 /*********************************
@@ -5397,6 +5526,7 @@ if (isFloatingPoint!(X))
  *  $(D true) if $(D_PARAM x) is finite.
  */
 bool isFinite(X)(X x) @trusted pure nothrow @nogc
+if (isFloatingPoint!X)
 {
     alias F = floatTraits!(X);
     ushort* pe = cast(ushort *)&x;
@@ -5444,6 +5574,7 @@ bool isFinite(X)(X x) @trusted pure nothrow @nogc
  * be converted to normal reals.
  */
 bool isNormal(X)(X x) @trusted pure nothrow @nogc
+if (isFloatingPoint!X)
 {
     alias F = floatTraits!(X);
     static if (F.realFormat == RealFormat.ibmExtended)
@@ -5490,6 +5621,7 @@ bool isNormal(X)(X x) @trusted pure nothrow @nogc
  *  $(D true) if $(D_PARAM x) is a denormal number.
  */
 bool isSubnormal(X)(X x) @trusted pure nothrow @nogc
+if (isFloatingPoint!X)
 {
     /*
         Need one for each format because subnormal floats might
@@ -5536,12 +5668,12 @@ bool isSubnormal(X)(X x) @trusted pure nothrow @nogc
 {
     import std.meta : AliasSeq;
 
-    foreach (T; AliasSeq!(float, double, real))
-    {
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
         T f;
         for (f = 1.0; !isSubnormal(f); f /= 2)
             assert(f != 0);
-    }
+    }}
 }
 
 /*********************************
@@ -5695,6 +5827,7 @@ bool isIdentical(real x, real y) @trusted pure nothrow @nogc
  * Return 1 if sign bit of e is set, 0 if not.
  */
 int signbit(X)(X x) @nogc @trusted pure nothrow
+if (isFloatingPoint!X)
 {
     alias F = floatTraits!(X);
     return ((cast(ubyte *)&x)[F.SIGNPOS_BYTE] & 0x80) != 0;
@@ -5759,10 +5892,10 @@ if (isIntegral!(X) && isFloatingPoint!(R))
 {
     import std.meta : AliasSeq;
 
-    foreach (X; AliasSeq!(float, double, real, int, long))
+    static foreach (X; AliasSeq!(float, double, real, int, long))
     {
-        foreach (Y; AliasSeq!(float, double, real))
-        (){ // avoid slow optimizations for large functions @@@BUG@@@ 2396
+        static foreach (Y; AliasSeq!(float, double, real))
+        {{
             X x = 21;
             Y y = 23.8;
             Y e = void;
@@ -5787,7 +5920,7 @@ if (isIntegral!(X) && isFloatingPoint!(R))
                 e = copysign(X.nan, -y);
                 assert(isNaN(e) && signbit(e));
             }
-        }();
+        }}
     }
 }
 
@@ -5796,6 +5929,7 @@ Returns $(D -1) if $(D x < 0), $(D x) if $(D x == 0), $(D 1) if
 $(D x > 0), and $(NAN) if x==$(NAN).
  */
 F sgn(F)(F x) @safe pure nothrow @nogc
+if (isNumeric!F)
 {
     // @@@TODO@@@: make this faster
     return x > 0 ? 1 : x < 0 ? -1 : x;
@@ -6268,6 +6402,7 @@ float nextDown(float x) @safe pure nothrow @nogc
  * not equal to y.
  */
 T nextafter(T)(const T x, const T y) @safe pure nothrow @nogc
+if (isFloatingPoint!T)
 {
     if (x == y) return y;
     return ((y>x) ? nextUp(x) :  nextDown(x));
@@ -7444,6 +7579,34 @@ private real polyImpl(real x, in real[] A) @trusted pure nothrow @nogc
                 ;
             }
         }
+        else version (DragonFlyBSD)
+        {
+            asm pure nothrow @nogc // assembler by W. Bright
+            {
+                // EDX = (A.length - 1) * real.sizeof
+                mov     ECX,A[EBP]              ; // ECX = A.length
+                dec     ECX                     ;
+                lea     EDX,[ECX*8]             ;
+                lea     EDX,[EDX][ECX*4]        ;
+                add     EDX,A+4[EBP]            ;
+                fld     real ptr [EDX]          ; // ST0 = coeff[ECX]
+                jecxz   return_ST               ;
+                fld     x[EBP]                  ; // ST0 = x
+                fxch    ST(1)                   ; // ST1 = x, ST0 = r
+                align   4                       ;
+        L2:     fmul    ST,ST(1)                ; // r *= x
+                fld     real ptr -12[EDX]       ;
+                sub     EDX,12                  ; // deg--
+                faddp   ST(1),ST                ;
+                dec     ECX                     ;
+                jne     L2                      ;
+                fxch    ST(1)                   ; // ST1 = r, ST0 = x
+                fstp    ST(0)                   ; // dump x
+                align   4                       ;
+        return_ST:                              ;
+                ;
+            }
+        }
         else
         {
             static assert(0);
@@ -7476,6 +7639,9 @@ private real polyImpl(real x, in real[] A) @trusted pure nothrow @nogc
        pair of elements.
  */
 bool approxEqual(T, U, V)(T lhs, U rhs, V maxRelDiff, V maxAbsDiff = 1e-5)
+if ((isNumeric!T || (isInputRange!T && isNumeric!(ElementType!T))) &&
+    (isNumeric!U || (isInputRange!U && isNumeric!(ElementType!U))) &&
+    isNumeric!V)
 {
     import std.range.primitives : empty, front, isInputRange, popFront;
     static if (isInputRange!T)
@@ -7645,9 +7811,12 @@ bool approxEqual(T, U)(T lhs, U rhs)
 
     // Verify correct behavior for large inputs
     assert(!isNaN(tan(0x1p63)));
-    assert(!isNaN(tan(0x1p300L)));
     assert(!isNaN(tan(-0x1p63)));
-    assert(!isNaN(tan(-0x1p300L)));
+    static if (real.mant_dig >= 64)
+    {
+        assert(!isNaN(tan(0x1p300L)));
+        assert(!isNaN(tan(-0x1p300L)));
+    }
 }
 
 @safe pure nothrow unittest
@@ -7869,8 +8038,8 @@ if (isFloatingPoint!T)
 @safe unittest
 {
     import std.meta : AliasSeq;
-    foreach (T; AliasSeq!(float, double, real))
-    {
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
         T[] values = [-cast(T) NaN(20), -cast(T) NaN(10), -T.nan, -T.infinity,
                       -T.max, -T.max / 2, T(-16.0), T(-1.0).nextDown,
                       T(-1.0), T(-1.0).nextUp,
@@ -7894,7 +8063,7 @@ if (isFloatingPoint!T)
             }
             assert(cmp(x, x) == 0);
         }
-    }
+    }}
 }
 
 private enum PowType
@@ -8034,8 +8203,8 @@ if (isFloatingPoint!T)
 {
     import std.meta : AliasSeq;
 
-    foreach (T; AliasSeq!(float, double, real))
-    {
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
         enum T subNormal = T.min_normal / 2;
 
         static if (subNormal) assert(nextPow2(subNormal) == T.min_normal);
@@ -8059,7 +8228,7 @@ if (isFloatingPoint!T)
 
         assert(nextPow2(T.infinity) == T.infinity);
         assert(nextPow2(T.init).isNaN);
-    }
+    }}
 }
 
 @safe @nogc pure nothrow unittest // Issue 15973
@@ -8164,7 +8333,7 @@ if (isFloatingPoint!T)
 {
     import std.meta : AliasSeq;
 
-    foreach (T; AliasSeq!(float, double, real))
+    static foreach (T; AliasSeq!(float, double, real))
     {
         assert(truncPow2(T(0.0)) == 0.0);
 
@@ -8260,8 +8429,8 @@ if (isNumeric!X)
     immutable smallP7 = pow(7.0L, -35);
     immutable bigP7 = pow(7.0L, 30);
 
-    foreach (X; AliasSeq!(float, double, real))
-    {
+    static foreach (X; AliasSeq!(float, double, real))
+    {{
         immutable min_sub = X.min_normal * X.epsilon;
 
         foreach (x; [smallP2, min_sub, X.min_normal, .25L, 0.5L, 1.0L,
@@ -8276,10 +8445,10 @@ if (isNumeric!X)
             assert(!isPowerOf2(cast(X) x));
             assert(!isPowerOf2(cast(X)-x));
         }
-    }
+    }}
 
-    foreach (X; AliasSeq!(byte, ubyte, short, ushort, int, uint, long, ulong))
-    {
+    static foreach (X; AliasSeq!(byte, ubyte, short, ushort, int, uint, long, ulong))
+    {{
         foreach (x; [1, 2, 4, 8, (X.max >>> 1) + 1])
         {
             assert( isPowerOf2(cast(X) x));
@@ -8289,5 +8458,5 @@ if (isNumeric!X)
 
         foreach (x; [0, 3, 5, 13, 77, X.min, X.max])
             assert(!isPowerOf2(cast(X) x));
-    }
+    }}
 }

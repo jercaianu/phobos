@@ -406,6 +406,65 @@ void put(R, E)(ref R r, E e)
     }
 }
 
+/**
+ * When an output range's `put` method only accepts elements of type
+ * `T`, use the global `put` to handle outputting a `T[]` to the range
+ * or vice-versa.
+ */
+@safe pure unittest
+{
+    import std.traits : isSomeChar;
+
+    static struct A
+    {
+        string data;
+
+        void put(C)(C c) if (isSomeChar!C)
+        {
+            data ~= c;
+        }
+    }
+    static assert(isOutputRange!(A, char));
+
+    auto a = A();
+    put(a, "Hello");
+    assert(a.data == "Hello");
+}
+
+/**
+ * `put` treats dynamic arrays as array slices, and will call `popFront`
+ * on the slice after an element has been copied.
+ *
+ * Be sure to save the position of the array before calling `put`.
+ */
+@safe pure nothrow unittest
+{
+    int[] a = [1, 2, 3], b = [10, 20];
+    auto c = a;
+    put(a, b);
+    assert(c == [10, 20, 3]);
+    // at this point, a was advanced twice, so it only contains
+    // its last element while c represents the whole array
+    assert(a == [3]);
+}
+
+/**
+ * Because of auto-decoding, the `front` of a `string` is a `dchar`,
+ * so using `put` with `char` arrays is disallowed. In order to fill
+ * any `char` type array, use $(REF byCodeUnit, std, utf).
+ */
+@safe pure nothrow unittest
+{
+    import std.utf : byCodeUnit;
+
+    // the elements must be mutable, so using string or const(char)[]
+    // won't compile
+    char[] s1 = new char[13];
+    auto r1 = s1.byCodeUnit;
+    put(r1, "Hello, World!");
+    assert(s1 == "Hello, World!");
+}
+
 @safe pure nothrow @nogc unittest
 {
     static struct R() { void put(in char[]) {} }
@@ -484,15 +543,6 @@ pure @safe unittest
     }
     B b;
     put(b, 5);
-}
-
-@safe unittest
-{
-    int[] a = [1, 2, 3], b = [10, 20];
-    auto c = a;
-    put(a, b);
-    assert(c == [10, 20, 3]);
-    assert(a == [3]);
 }
 
 @safe unittest
@@ -612,19 +662,19 @@ pure @safe unittest
     putChar(p, cast(dchar)'a');
 
     //Source Char
-    foreach (SC; AliasSeq!(char, wchar, dchar))
-    {
+    static foreach (SC; AliasSeq!(char, wchar, dchar))
+    {{
         SC ch = 'I';
         dchar dh = '♥';
         immutable(SC)[] s = "日本語！";
         immutable(SC)[][] ss = ["日本語", "が", "好き", "ですか", "？"];
 
         //Target Char
-        foreach (TC; AliasSeq!(char, wchar, dchar))
+        static foreach (TC; AliasSeq!(char, wchar, dchar))
         {
             //Testing PutC and PutS
-            foreach (Type; AliasSeq!(PutC!TC, PutS!TC))
-            (){ // avoid slow optimizations for large functions @@@BUG@@@ 2396
+            static foreach (Type; AliasSeq!(PutC!TC, PutS!TC))
+            {{
                 Type type;
                 auto sink = new Type();
 
@@ -640,9 +690,9 @@ pure @safe unittest
                     put(value, ss);
                     assert(value.result == "I♥日本語！日本語が好きですか？");
                 }
-            }();
+            }}
         }
-    }
+    }}
 }
 
 @safe unittest
@@ -716,8 +766,8 @@ pure @safe unittest
     }
     void foo()
     {
-        foreach (C; AliasSeq!(char, wchar, dchar))
-        {
+        static foreach (C; AliasSeq!(char, wchar, dchar))
+        {{
             formattedWrite((C c){},        "", 1, 'a', cast(wchar)'a', cast(dchar)'a', "a"c, "a"w, "a"d);
             formattedWrite((const(C)[]){}, "", 1, 'a', cast(wchar)'a', cast(dchar)'a', "a"c, "a"w, "a"d);
             formattedWrite(PutC!C(),       "", 1, 'a', cast(wchar)'a', cast(dchar)'a', "a"c, "a"w, "a"d);
@@ -728,7 +778,7 @@ pure @safe unittest
             formattedWrite(callS,          "", 1, 'a', cast(wchar)'a', cast(dchar)'a', "a"c, "a"w, "a"d);
             formattedWrite(FrontC!C(),     "", 1, 'a', cast(wchar)'a', cast(dchar)'a', "a"c, "a"w, "a"d);
             formattedWrite(FrontS!C(),     "", 1, 'a', cast(wchar)'a', cast(dchar)'a', "a"c, "a"w, "a"d);
-        }
+        }}
         formattedWrite((dchar[]).init,     "", 1, 'a', cast(wchar)'a', cast(dchar)'a', "a"c, "a"w, "a"d);
     }
 }
@@ -1388,41 +1438,13 @@ This is because a narrow string's length does not reflect the number of
 characters, but instead the number of encoding units, and as such is not useful
 with range-oriented algorithms. To use strings as random-access ranges with
 length, use $(REF representation, std, string) or $(REF byCodeUnit, std, utf).
-
-Deprecation: Historically `hasLength!R` yielded `true` for types whereby
-`R.length` returns other types convertible to `ulong`, such as `int`, `ushort`,
-`const(size_t)`, user-defined types using `alias this`, or notably `ulong` on
-32-bit systems. This behavior has  been deprecated. After December 2017,
-`hasLength` will yield `true` only if `R.length` yields the exact type `size_t`.
 */
 template hasLength(R)
 {
     static if (is(typeof(((R* r) => r.length)(null)) Length))
-    {
-        static if (is(Length == size_t))
-        {
-            enum bool hasLength = !isNarrowString!R;
-        }
-        else static if (is(Length : ulong))
-        {
-            // @@@DEPRECATED_2017-12@@@
-            // Uncomment the deprecated(...) message and take the pragma(msg)
-            // out once https://issues.dlang.org/show_bug.cgi?id=10181 is fixed.
-            pragma(msg, __FILE__ ~ "(" ~ __LINE__.stringof ~
-                "): Note: length must have type size_t on all systems" ~
-                    ", please update your code by December 2017.");
-            //deprecated("length must have type size_t on all systems")
-            enum bool hasLength = true;
-        }
-        else
-        {
-            enum bool hasLength = false;
-        }
-    }
+        enum bool hasLength = is(Length == size_t) && !isNarrowString!R;
     else
-    {
         enum bool hasLength = false;
-    }
 }
 
 ///
@@ -1432,12 +1454,41 @@ template hasLength(R)
     static assert( hasLength!(int[]));
     static assert( hasLength!(inout(int)[]));
 
-    struct A { ulong length; }
-    struct B { size_t length() { return 0; } }
-    struct C { @property size_t length() { return 0; } }
+    struct A { size_t length() { return 0; } }
+    struct B { @property size_t length() { return 0; } }
     static assert( hasLength!(A));
     static assert( hasLength!(B));
-    static assert( hasLength!(C));
+}
+
+// test combinations which are invalid on some platforms
+@safe unittest
+{
+    struct A { ulong length; }
+    struct B { @property uint length() { return 0; } }
+
+    version (X86)
+    {
+        static assert(!hasLength!(A));
+        static assert(hasLength!(B));
+    }
+    else version(X86_64)
+    {
+        static assert(hasLength!(A));
+        static assert(!hasLength!(B));
+    }
+}
+
+// test combinations which are invalid on all platforms
+@safe unittest
+{
+    struct A { long length; }
+    struct B { int length; }
+    struct C { ubyte length; }
+    struct D { char length; }
+    static assert(!hasLength!(A));
+    static assert(!hasLength!(B));
+    static assert(!hasLength!(C));
+    static assert(!hasLength!(D));
 }
 
 /**
@@ -2070,7 +2121,7 @@ if (!isNarrowString!(T[]) && !is(T[] == void[]))
     assert(a == [ 2, 3 ]);
 }
 
-version(unittest)
+version(StdUnittest)
 {
     static assert(!is(typeof({          int[4] a; popFront(a); })));
     static assert(!is(typeof({ immutable int[] a; popFront(a); })));
@@ -2118,8 +2169,8 @@ if (isNarrowString!(C[]))
 {
     import std.meta : AliasSeq;
 
-    foreach (S; AliasSeq!(string, wstring, dstring))
-    {
+    static foreach (S; AliasSeq!(string, wstring, dstring))
+    {{
         S s = "\xC2\xA9hello";
         s.popFront();
         assert(s == "hello");
@@ -2134,7 +2185,7 @@ if (isNarrowString!(C[]))
 
         static assert(!is(typeof({          immutable S a; popFront(a); })));
         static assert(!is(typeof({ typeof(S.init[0])[4] a; popFront(a); })));
-    }
+    }}
 
     C[] _eatString(C)(C[] str)
     {
@@ -2191,7 +2242,7 @@ if (!isNarrowString!(T[]) && !is(T[] == void[]))
     assert(a == [ 1, 2 ]);
 }
 
-version(unittest)
+version(StdUnittest)
 {
     static assert(!is(typeof({ immutable int[] a; popBack(a); })));
     static assert(!is(typeof({          int[4] a; popBack(a); })));
@@ -2211,8 +2262,8 @@ if (isNarrowString!(T[]))
 {
     import std.meta : AliasSeq;
 
-    foreach (S; AliasSeq!(string, wstring, dstring))
-    {
+    static foreach (S; AliasSeq!(string, wstring, dstring))
+    {{
         S s = "hello\xE2\x89\xA0";
         s.popBack();
         assert(s == "hello");
@@ -2232,7 +2283,7 @@ if (isNarrowString!(T[]))
 
         static assert(!is(typeof({          immutable S a; popBack(a); })));
         static assert(!is(typeof({ typeof(S.init[0])[4] a; popBack(a); })));
-    }
+    }}
 }
 
 /**

@@ -1,9 +1,12 @@
+// Written in the D programming language.
 /**
 Utility and ancillary artifacts of `std.experimental.allocator`. This module
 shouldn't be used directly; its functionality will be migrated into more
 appropriate parts of `std`.
 
 Authors: $(HTTP erdani.com, Andrei Alexandrescu), Timon Gehr (`Ternary`)
+
+Source: $(PHOBOSSRC std/experimental/allocator/_common.d)
 */
 module std.experimental.allocator.common;
 import std.algorithm.comparison, std.traits;
@@ -88,7 +91,7 @@ size_t goodAllocSize(A)(auto ref A a, size_t n)
     return n.roundUpToMultipleOf(a.alignment);
 }
 
-/**
+/*
 Returns s rounded up to a multiple of base.
 */
 @safe @nogc nothrow pure
@@ -108,7 +111,7 @@ unittest
     assert(118.roundUpToMultipleOf(11) == 121);
 }
 
-/**
+/*
 Returns `n` rounded up to a multiple of alignment, which must be a power of 2.
 */
 @safe @nogc nothrow pure
@@ -133,7 +136,7 @@ unittest
     assert(118.roundUpToAlignment(64) == 128);
 }
 
-/**
+/*
 Returns `n` rounded down to a multiple of alignment, which must be a power of 2.
 */
 @safe @nogc nothrow pure
@@ -153,7 +156,7 @@ unittest
     assert(63.roundDownToAlignment(64) == 0);
 }
 
-/**
+/*
 Advances the beginning of `b` to start at alignment `a`. The resulting buffer
 may therefore be shorter. Returns the adjusted buffer, or null if obtaining a
 non-empty buffer is impossible.
@@ -177,7 +180,7 @@ package void[] roundUpToAlignment(void[] b, uint a)
     assert(roundUpToAlignment(buf, 128) !is null);
 }
 
-/**
+/*
 Like `a / b` but rounds the result up, not down.
 */
 @safe @nogc nothrow pure
@@ -187,7 +190,7 @@ package size_t divideRoundUp(size_t a, size_t b)
     return (a + b - 1) / b;
 }
 
-/**
+/*
 Returns `s` rounded up to a multiple of `base`.
 */
 @nogc nothrow pure
@@ -209,7 +212,7 @@ nothrow pure
     assert(roundStartToMultipleOf(p, 16) is p);
 }
 
-/**
+/*
 Returns $(D s) rounded up to the nearest power of 2.
 */
 @safe @nogc nothrow pure
@@ -246,7 +249,7 @@ unittest
     assert(((size_t.max >> 1) + 1).roundUpToPowerOf2 == (size_t.max >> 1) + 1);
 }
 
-/**
+/*
 Returns the number of trailing zeros of $(D x).
 */
 @safe @nogc nothrow pure
@@ -270,7 +273,7 @@ unittest
     assert(trailingZeros(4) == 2);
 }
 
-/**
+/*
 Returns `true` if `ptr` is aligned at `alignment`.
 */
 @nogc nothrow pure
@@ -279,7 +282,7 @@ package bool alignedAt(T)(T* ptr, uint alignment)
     return cast(size_t) ptr % alignment == 0;
 }
 
-/**
+/*
 Returns the effective alignment of `ptr`, i.e. the largest power of two that is
 a divisor of `ptr`.
 */
@@ -296,7 +299,7 @@ package uint effectiveAlignment(void* ptr)
     assert(effectiveAlignment(&x) >= int.alignof);
 }
 
-/**
+/*
 Aligns a pointer down to a specified alignment. The resulting pointer is less
 than or equal to the given pointer.
 */
@@ -308,7 +311,7 @@ package void* alignDownTo(void* ptr, uint alignment)
     return cast(void*) (cast(size_t) ptr & ~(alignment - 1UL));
 }
 
-/**
+/*
 Aligns a pointer up to a specified alignment. The resulting pointer is greater
 than or equal to the given pointer.
 */
@@ -476,9 +479,9 @@ Forwards each of the methods in `funs` (if defined) to `member`.
     return result;
 }
 
-version(unittest)
+version(StdUnittest)
 {
-    import std.experimental.allocator : IAllocator, ISharedAllocator;
+    import std.experimental.allocator : RCIAllocator, RCISharedAllocator;
 
     package void testAllocator(alias make)()
     {
@@ -604,18 +607,18 @@ version(unittest)
          }}
     }
 
-    package void testAllocatorObject(AllocInterface)(AllocInterface a)
-        if (is(AllocInterface : IAllocator)
-            || is (AllocInterface : shared ISharedAllocator))
+    package void testAllocatorObject(RCAllocInterface)(RCAllocInterface a)
+        if (is(RCAllocInterface == RCIAllocator)
+            || is (RCAllocInterface == shared RCISharedAllocator))
     {
         import std.conv : text;
         import std.math : isPowerOf2;
         import std.stdio : writeln, stderr;
         import std.typecons : Ternary;
         scope(failure) stderr.writeln("testAllocatorObject failed for ",
-                AllocInterface.stringof);
+                RCAllocInterface.stringof);
 
-        assert(a);
+        assert(!a.isNull);
 
         // Test alignment
         assert(a.alignment.isPowerOf2);

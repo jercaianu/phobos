@@ -5,6 +5,18 @@
 
     For convenience, this module publicly imports $(MREF core,time).
 
+$(SCRIPT inhibitQuickIndex = 1;)
+$(BOOKTABLE,
+$(TR $(TH Category) $(TH Functions))
+$(TR $(TD Main functionality) $(TD
+    $(LREF StopWatch)
+    $(LREF benchmark)
+))
+$(TR $(TD Flags) $(TD
+    $(LREF AutoStart)
+))
+)
+
     $(RED Unlike the other modules in std.datetime, this module is not currently
           publicly imported in std.datetime.package, because the old
           versions of this functionality which use
@@ -69,6 +81,22 @@ alias AutoStart = Flag!"autoStart";
 struct StopWatch
 {
 public:
+
+    /// Measure a time in milliseconds, microseconds, or nanoseconds
+    @safe nothrow @nogc unittest
+    {
+        auto sw = StopWatch(AutoStart.no);
+        sw.start();
+        // ... Insert operations to be timed here ...
+        sw.stop();
+
+        long msecs = sw.peek.total!"msecs";
+        long usecs = sw.peek.total!"usecs";
+        long nsecs = sw.peek.total!"nsecs";
+
+        assert(usecs >= msecs * 1000);
+        assert(nsecs >= usecs * 1000);
+    }
 
     ///
     @system nothrow @nogc unittest
