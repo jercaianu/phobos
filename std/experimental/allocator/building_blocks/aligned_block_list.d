@@ -3,6 +3,8 @@ module std.experimental.allocator.building_blocks.aligned_block_list;
 import std.experimental.allocator.common;
 import std.experimental.allocator.building_blocks.stats_collector;
 import std.experimental.allocator.building_blocks.bitmapped_block;
+import std.experimental.allocator.building_blocks.null_allocator;
+import std.experimental.allocator.building_blocks.region;
 
 // Common function implementation for thread local and shared AlignedBlockList
 private mixin template AlignedBlockListImpl(bool isShared)
@@ -17,6 +19,8 @@ private:
     {
         AlignedBlockNode *next;
         StatsCollector!(Allocator, Options.bytesUsed) bAlloc;
+
+        static if (isShared)
         uint keepAlive;
     }
 
@@ -63,12 +67,9 @@ private:
         ubyte[] payload = ((cast(ubyte*) buf[AlignedBlockNode.sizeof .. $])[0 .. buf.length - AlignedBlockNode.sizeof]);
         newNode.bAlloc.parent = Allocator(payload);
 
-        if (localRoot)
-            newNode.next = localRoot;
-        else
-            newNode.next = null;
-
+        newNode.next = localRoot;
         root = cast(typeof(root)) newNode;
+
         return true;
     }
 
@@ -132,11 +133,23 @@ public:
             }
 
             // This node has no fresh memory available doesn't hold alive objects, remove it
-            if (tmp.bAlloc.bytesUsed == 0 && tmp.keepAlive == 0)
+            static if (isShared)
             {
-                removeNode(tmp, prev);
-                if (!root)
-                    break;
+                if (tmp.bAlloc.bytesUsed == 0 && tmp.keepAlive == 0)
+                {
+                    removeNode(tmp, prev);
+                    if (!root)
+                        break;
+                }
+            }
+            else
+            {
+                if (tmp.bAlloc.bytesUsed == 0)
+                {
+                    removeNode(tmp, prev);
+                    if (!root)
+                        break;
+                }
             }
 
             prev = tmp;
@@ -159,28 +172,28 @@ public:
     }
 }
 
-version (StdDdoc)
+/**
+`AlignedBlockList` is a safe and fast allocator for small objects, under certain constraints.
+If `ParentAllocator` implements `alignedAllocate`, and always returns fresh memory,
+`AlignedBlockList` will eliminate undefined behaviour (by not reusing memory),
+at the cost of higher fragmentation.
+
+The allocator holds internally a doubly linked list of `BitmappedBlock`, which will serve allocations
+in a most-recently-used fashion. Most recent allocators used for `allocate` calls, will be
+moved to the front of the list.
+
+Although allocations are in theory served in linear searching time, `deallocate` calls take
+$(BIGOH 1) time, by using aligned allocations. All `BitmappedBlock` are allocated at the alignment given
+as template parameter `theAlignment`. For a given pointer, this allows for quickly finding
+the `BitmappedBlock` owner using basic bitwise operations. The recommended alignment is 4MB or 8MB.
+
+The ideal use case for this allocator is in conjunction with `AscendingPageAllocator`, which
+always returns fresh memory on aligned allocations and `Segregator` for multiplexing across a wide
+range of block sizes.
+*/
+struct AlignedBlockList(Allocator, ParentAllocator, ulong theAlignment = (1 << 23))
 {
-    /**
-    `AlignedBlockList` is a safe and fast allocator for small objects, under certain constraints.
-    If `ParentAllocator` implements `alignedAllocate`, and always returns fresh memory,
-    `AlignedBlockList` will eliminate undefined behaviour (by not reusing memory),
-    at the cost of higher fragmentation.
-
-    The allocator holds internally a doubly linked list of `BitmappedBlock`, which will serve allocations
-    in a most-recently-used fashion. Most recent allocators used for `allocate` calls, will be
-    moved to the front of the list.
-
-    Although allocations are in theory served in linear searching time, `deallocate` calls take
-    $(BIGOH 1) time, by using aligned allocations. All `BitmappedBlock` are allocated at the alignment given
-    as template parameter `theAlignment`. For a given pointer, this allows for quickly finding
-    the `BitmappedBlock` owner using basic bitwise operations. The recommended alignment is 4MB or 8MB.
-
-    The ideal use case for this allocator is in conjunction with `AscendingPageAllocator`, which
-    always returns fresh memory on aligned allocations and `Segregator` for multiplexing across a wide
-    range of block sizes.
-    */
-    struct AlignedBlockList(Allocator, ParentAllocator, ulong theAlignment = (1 << 23))
+    version (StdDdoc)
     {
         import std.typecons : Ternary;
         import std.traits : hasMember;
@@ -209,21 +222,18 @@ version (StdDdoc)
         static if (hasMember!(ParentAllocator, "owns"))
         Ternary owns(void[] b);
     }
-}
-else
-{
-    struct AlignedBlockList(Allocator, ParentAllocator, ulong theAlignment = (1 << 23))
+    else
     {
         mixin AlignedBlockListImpl!false;
     }
 }
 
-version (StdDdoc)
+/**
+`SharedAlignedBlockList` is the threadsafe version of `AlignedBlockList`
+*/
+shared struct SharedAlignedBlockList(Allocator, ParentAllocator, ulong theAlignment = (1 << 23))
 {
-    /**
-    `SharedAlignedBlockList` is the threadsafe version of `AlignedBlockList`
-    */
-    shared struct SharedAlignedBlockList(Allocator, ParentAllocator, ulong theAlignment = (1 << 23))
+    version (StdDdoc)
     {
         import std.typecons : Ternary;
         import std.traits : hasMember;
@@ -252,10 +262,7 @@ version (StdDdoc)
         static if (hasMember!(ParentAllocator, "owns"))
         Ternary owns(void[] b);
     }
-}
-else
-{
-    shared struct SharedAlignedBlockList(Allocator, ParentAllocator, ulong theAlignment = (1 << 23))
+    else
     {
         mixin AlignedBlockListImpl!true;
     }
@@ -275,6 +282,7 @@ version (unittest)
     }
 }
 
+/*
 @system unittest
 {
     import std.experimental.allocator.building_blocks.ascending_page_allocator : AscendingPageAllocator;
@@ -353,7 +361,6 @@ version (unittest)
     }
 }
 
-/*
 @system unittest
 {
     import std.experimental.allocator.building_blocks.ascending_page_allocator : SharedAscendingPageAllocator;
@@ -447,17 +454,18 @@ version (unittest)
 
 @system unittest
 {
-    import std.experimental.allocator.building_blocks.region : SharedRegion;
-    import std.experimental.allocator.building_blocks.ascending_page_allocator : SharedAscendingPageAllocator;
+    import std.experimental.allocator.building_blocks.region;
+    import std.experimental.allocator.building_blocks.ascending_page_allocator;
     import std.random;
     import core.thread : ThreadGroup;
     import core.internal.spinlock : SpinLock;
 
-    alias SuperAllocator = SharedAlignedBlockList!(SharedRegion, SharedAscendingPageAllocator, 1 << 16);
+    alias SuperAllocator = SharedAlignedBlockList!(SharedRegion!(NullAllocator, 1), SharedAscendingPageAllocator, 1 << 16);
+    shared SharedAscendingPageAllocator pageAlloc = SharedAscendingPageAllocator(4096 * 1024);
     enum numThreads = 10;
 
     SuperAllocator a;
-    a.parent = SharedAscendingPageAllocator(4096 * 1024);
+    a.parent = pageAlloc;
 
     void fun()
     {
