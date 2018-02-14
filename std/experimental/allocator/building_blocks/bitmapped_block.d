@@ -1746,3 +1746,316 @@ private struct BitVector
     assert(v.findZeros(641, 1) == ulong.max);
     assert(v.findZeros(641, 100) == ulong.max);
 }
+
+shared struct FixedBlock(size_t theBlockSize, ParentAllocator, size_t theAlignment = platformAlignment)
+{
+    import std.conv : text;
+    import std.traits : hasMember;
+    import std.typecons : Ternary;
+    import std.typecons : tuple, Tuple;
+
+    /**
+    If $(D blockSize == chooseAtRuntime), $(D BitmappedBlock) offers a read/write
+    property $(D blockSize). It must be set before any use of the allocator.
+    Otherwise (i.e. $(D theBlockSize) is a legit constant), $(D blockSize) is
+    an alias for $(D theBlockSize). Whether constant or variable, must also be
+    a multiple of $(D alignment). This constraint is $(D assert)ed statically
+    and dynamically.
+    */
+    static if (theBlockSize != chooseAtRuntime)
+    {
+        alias blockSize = theBlockSize;
+    }
+    else
+    {
+        @property uint blockSize() { return _blockSize; }
+        @property void blockSize(uint s)
+        {
+            assert(_control.length == 0 && s % alignment == 0);
+            _blockSize = s;
+        }
+        private uint _blockSize;
+    }
+
+    static if (is(ParentAllocator == NullAllocator))
+    {
+        private enum parentAlignment = platformAlignment;
+    }
+    else
+    {
+        private alias parentAlignment = ParentAllocator.alignment;
+        static assert(parentAlignment >= ulong.alignof);
+    }
+
+    /**
+    The _alignment offered is user-configurable statically through parameter
+    $(D theAlignment), defaulted to $(D platformAlignment).
+    */
+    alias alignment = theAlignment;
+
+    // state {
+    /**
+    The _parent allocator. Depending on whether $(D ParentAllocator) holds state
+    or not, this is a member variable or an alias for
+    `ParentAllocator.instance`.
+    */
+    static if (stateSize!ParentAllocator)
+    {
+        ParentAllocator parent;
+    }
+    else
+    {
+        alias parent = ParentAllocator.instance;
+    }
+
+    private uint _blocks;
+    private ulong[] _control;
+    private void[] _payload;
+    size_t _startIdx;
+
+    pure nothrow @safe @nogc
+    private size_t totalAllocation(size_t capacity)
+    {
+        auto blocks = capacity.divideRoundUp(blockSize);
+        auto leadingUlongs = blocks.divideRoundUp(64);
+        import std.algorithm.comparison : min;
+        immutable initialAlignment = min(parentAlignment,
+            1U << trailingZeros(leadingUlongs * 8));
+        auto maxSlack = alignment <= initialAlignment
+            ? 0
+            : alignment - initialAlignment;
+        //writeln(maxSlack);
+        return leadingUlongs * 8 + maxSlack + blockSize * blocks;
+    }
+
+    /**
+    Constructs a block allocator given a hunk of memory, or a desired capacity
+    in bytes.
+
+    $(UL
+    $(LI If $(D ParentAllocator) is $(D NullAllocator), only the constructor
+    taking $(D data) is defined and the user is responsible for freeing $(D
+    data) if desired.)
+    $(LI Otherwise, both constructors are defined. The $(D data)-based
+    constructor assumes memory has been allocated with the parent allocator.
+    The $(D capacity)-based constructor uses $(D ParentAllocator) to allocate
+    an appropriate contiguous hunk of memory. Regardless of the constructor
+    used, the destructor releases the memory by using $(D
+    ParentAllocator.deallocate).)
+    )
+    */
+    this(ubyte[] data)
+    {
+        immutable a = data.ptr.effectiveAlignment;
+        assert(a >= size_t.alignof || !data.ptr,
+            "Data must be aligned properly");
+
+        immutable ulong totalBits = data.length * 8;
+        immutable ulong bitsPerBlock = blockSize * 8 + 1;
+        // Get a first estimate
+        import std.conv : to;
+        _blocks = to!uint(totalBits / bitsPerBlock);
+
+        // Reality is a bit more complicated, iterate until a good number of
+        // blocks found.
+        ulong localBlocks = _blocks;
+        for (; localBlocks; --localBlocks)
+        {
+            immutable controlWords = localBlocks.divideRoundUp(64);
+            auto payload = data[controlWords * 8 .. $].roundStartToMultipleOf(
+                alignment);
+            if (payload.length < localBlocks * blockSize)
+            {
+                // Overestimated
+                continue;
+            }
+            _control = (cast(shared(ulong*)) data.ptr)[0 .. controlWords];
+            _control[] = 0;
+            _payload = cast(typeof(_payload)) payload;
+            break;
+        }
+        _blocks = cast(typeof(_blocks)) localBlocks;
+    }
+
+    /// Ditto
+    static if (chooseAtRuntime == theBlockSize)
+    this(ubyte[] data, uint blockSize)
+    {
+        this._blockSize = blockSize;
+        this(data);
+    }
+
+    /// Ditto
+    static if (!is(ParentAllocator == NullAllocator))
+    this(size_t capacity)
+    {
+        size_t toAllocate = totalAllocation(capacity);
+        auto data = cast(ubyte[])(parent.allocate(toAllocate));
+        this(data);
+        assert(_blocks * blockSize >= capacity);
+    }
+
+    /// Ditto
+    static if (!is(ParentAllocator == NullAllocator) &&
+        chooseAtRuntime == theBlockSize)
+    this(size_t capacity, uint blockSize)
+    {
+        this._blockSize = blockSize;
+        this(capacity);
+    }
+
+    /**
+    Returns the actual bytes allocated when $(D n) bytes are requested, i.e.
+    $(D n.roundUpToMultipleOf(blockSize)).
+    */
+    pure nothrow @safe @nogc
+    size_t goodAllocSize(size_t n)
+    {
+        return n.roundUpToMultipleOf(blockSize);
+    }
+
+    @trusted void[] allocate(const size_t s)
+    {
+        import core.atomic : cas, atomicLoad;
+
+        assert(s.divideRoundUp(blockSize) == 1);
+        static ubyte[] firstZero = [
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+            1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+            1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+            1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2,
+            2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+            2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+            4, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 6, 6, 7
+        ];
+
+        ulong localStartIdx;
+        ulong newStartIdx;
+        do
+        {
+            localStartIdx = atomicLoad(_startIdx);
+            newStartIdx = (localStartIdx + 1) % _control.length;
+        } while (!cas(&_startIdx, localStartIdx, newStartIdx));
+
+        for (ulong idx = 0; idx < _blocks; idx++)
+        {
+            ulong i = (idx + localStartIdx) % _control.length;
+            ulong controlVal;
+            ulong newControlVal;
+            ulong bitIndex;
+            do {
+                bitIndex = 0;
+                controlVal = atomicLoad(_control[i]);
+
+                if (controlVal == ulong.max)
+                    break;
+
+                foreach (byteIndex; 0 .. 8)
+                {
+                    ulong mask = (0xFFUL << (8 * (7 - byteIndex)));
+                    if ((mask & controlVal) != mask)
+                    {
+                        bitIndex = firstZero[(mask & controlVal) >> (8 * (7 - byteIndex))];
+                        newControlVal = controlVal | (1UL << (63 - bitIndex));
+                        break;
+                    }
+                    bitIndex += 8;
+                }
+            } while (!cas(&_control[i], controlVal, newControlVal));
+
+            auto blockIndex = bitIndex + 64 * i;
+            if (controlVal != ulong.max && blockIndex < _blocks)
+                return cast(void[]) _payload[blockIndex * blockSize .. blockIndex * blockSize + s];
+        }
+
+        return null;
+    }
+
+    bool deallocate(void[] b)
+    {
+        import core.atomic : cas, atomicLoad;
+
+        ulong controlVal;
+        ulong newControlVal;
+        auto blockIndex = (b.ptr - _payload.ptr) / blockSize;
+        auto controlIndex = blockIndex / 64;
+        auto bitIndex = blockIndex % 64;
+
+        do {
+            controlVal = atomicLoad(_control[controlIndex]);
+            newControlVal = controlVal & ~(1 << (63 - bitIndex));
+        } while (!cas(&_control[controlIndex], controlVal, newControlVal));
+
+        return true;
+    }
+
+    /**
+    Returns `Ternary.yes` if `b` belongs to the `BitmappedBlock` object,
+    `Ternary.no` otherwise. Never returns `Ternary.unkown`. (This
+    method is somewhat tolerant in that accepts an interior slice.)
+    */
+    pure nothrow @trusted @nogc
+    Ternary owns(const void[] b) const
+    {
+        assert(b || b.length == 0, "Corrupt block.");
+        return Ternary(b && _payload && (&b[0] >= &_payload[0])
+               && (&b[0] + b.length) <= (&_payload[0] + _payload.length));
+    }
+
+}
+
+@system unittest
+{
+    import std.experimental.allocator.mallocator : Mallocator;
+
+    static void testAlloc(Allocator)(ref Allocator a)
+    {
+        import core.thread : ThreadGroup;
+        import std.algorithm.sorting : sort;
+        import core.internal.spinlock : SpinLock;
+
+        SpinLock lock = SpinLock(SpinLock.Contention.brief);
+        enum numThreads = 100;
+        void[][numThreads] buf;
+        size_t count = 0;
+
+        void fun()
+        {
+            void[] b = a.allocate(63);
+            assert(b.length == 63);
+
+            lock.lock();
+            buf[count] = b;
+            count++;
+            lock.unlock();
+        }
+
+        auto tg = new ThreadGroup;
+        foreach (i; 0 .. numThreads)
+        {
+            tg.create(&fun);
+        }
+        tg.joinAll();
+
+        sort!((a, b) => a.ptr < b.ptr)(buf[0 .. numThreads]);
+        foreach (i; 0 .. numThreads - 1)
+        {
+            assert(buf[i].ptr + a.goodAllocSize(buf[i].length) == buf[i + 1].ptr);
+        }
+
+        foreach (i; 0 .. numThreads)
+        {
+            assert(a.deallocate(buf[i]));
+        }
+    }
+
+     import std.experimental.allocator.mallocator : Mallocator;
+     auto fb = FixedBlock!(64, Mallocator)(1024 * 1024);
+     testAlloc(fb);
+}
