@@ -5,6 +5,10 @@ import std.experimental.allocator.building_blocks.stats_collector;
 import std.experimental.allocator.building_blocks.bitmapped_block;
 import std.experimental.allocator.building_blocks.null_allocator;
 import std.experimental.allocator.building_blocks.region;
+import std.datetime.stopwatch;
+
+StopWatch swPageAlloc;
+StopWatch swBitAlloc;
 
 // Common function implementation for thread local and shared AlignedBlockList
 private mixin template AlignedBlockListImpl(bool isShared)
@@ -17,11 +21,18 @@ private mixin template AlignedBlockListImpl(bool isShared)
 private:
     struct AlignedBlockNode
     {
-        AlignedBlockNode *next;
-        StatsCollector!(Allocator, Options.bytesUsed) bAlloc;
+        AlignedBlockNode* next, prev;
+        Allocator bAlloc;
 
         static if (isShared)
-        uint keepAlive;
+        {
+            shared(size_t) bytesUsed;
+            uint keepAlive;
+        }
+        else
+        {
+            size_t bytesUsed;
+        }
     }
 
     static if (stateSize!ParentAllocator) ParentAllocator parent;
@@ -32,24 +43,26 @@ private:
     static if (isShared)
     SpinLock lock = SpinLock(SpinLock.Contention.brief);
 
-    private void moveToFront(AlignedBlockNode *tmp, AlignedBlockNode *prev)
+    private void moveToFront(AlignedBlockNode *tmp)
     {
         auto localRoot = cast(AlignedBlockNode*) root;
         if (tmp == localRoot)
             return;
 
-        prev.next = tmp.next;
+        if (tmp.prev) tmp.prev.next = tmp.next;
+        if (tmp.next) tmp.next.prev = tmp.prev;
+        if (localRoot) localRoot.prev = tmp;
         tmp.next = localRoot;
+        tmp.prev = null;
 
         root = cast(typeof(root)) tmp;
     }
 
-    private void removeNode(AlignedBlockNode* tmp, AlignedBlockNode *prev)
+    private void removeNode(AlignedBlockNode* tmp)
     {
-        AlignedBlockNode *next = tmp.next;
-
-        if (prev)
-            prev.next = next;
+        auto next = tmp.next;
+        if (tmp.prev) tmp.prev.next = tmp.next;
+        if (tmp.next) tmp.next.prev = tmp.prev;
         assert(parent.deallocate((cast(void*) tmp)[0 .. alignment]));
 
         if (tmp == cast(AlignedBlockNode*) root)
@@ -64,10 +77,15 @@ private:
 
         auto localRoot = cast(AlignedBlockNode*) root;
         auto newNode = cast(AlignedBlockNode*) buf;
+        swPageAlloc.start();
         ubyte[] payload = ((cast(ubyte*) buf[AlignedBlockNode.sizeof .. $])[0 .. buf.length - AlignedBlockNode.sizeof]);
-        newNode.bAlloc.parent = Allocator(payload);
+        newNode.bAlloc = Allocator(payload);
+        swPageAlloc.stop();
 
         newNode.next = localRoot;
+        newNode.prev = null;
+        if (localRoot)
+            localRoot.prev = newNode;
         root = cast(typeof(root)) newNode;
 
         return true;
@@ -84,20 +102,40 @@ public:
 
     bool deallocate(void[] b)
     {
+        static if (isShared)
+        import core.atomic : atomicOp;
+
         enum ulong mask = ~(alignment - 1);
         // Round buffer to nearest `alignment` multiple
         ulong ptr = ((cast(ulong) b.ptr) & mask);
         AlignedBlockNode *node = cast(AlignedBlockNode*) ptr;
-        return node.bAlloc.deallocate(b);
+        if (node.bAlloc.deallocate(b))
+        {
+            static if (isShared)
+            {
+                atomicOp!"-="(node.bytesUsed, b.length);
+            }
+            else
+            {
+                node.bytesUsed -= b.length;
+            }
+            return true;
+        }
+        return false;
     }
 
     static if (hasMember!(ParentAllocator, "alignedAllocate"))
     void[] allocate(size_t n)
     {
         static if (isShared)
+        import core.atomic : atomicOp, atomicLoad;
+
+        if (n == 0 || n > alignment)
+            return null;
+
+        static if (isShared)
         lock.lock();
 
-        AlignedBlockNode *prev;
         auto tmp = cast(AlignedBlockNode*) root;
 
         // Iterate through list and find first node which has fresh memory available
@@ -109,13 +147,22 @@ public:
                 lock.unlock();
             }
 
+            swBitAlloc.start();
             auto result = tmp.bAlloc.allocate(n);
+            swBitAlloc.stop();
             if (result.length == n)
             {
                 static if (isShared)
-                lock.lock();
+                {
+                    atomicOp!"+="(tmp.bytesUsed, n);
+                    lock.lock();
+                }
+                else
+                {
+                    tmp.bytesUsed += n;
+                }
 
-                moveToFront(tmp, prev);
+                moveToFront(tmp);
 
                 static if (isShared)
                 {
@@ -135,24 +182,23 @@ public:
             // This node has no fresh memory available doesn't hold alive objects, remove it
             static if (isShared)
             {
-                if (tmp.bAlloc.bytesUsed == 0 && tmp.keepAlive == 0)
+                if (atomicLoad(tmp.bytesUsed) == 0 && tmp.keepAlive == 0)
                 {
-                    removeNode(tmp, prev);
+                    removeNode(tmp);
                     if (!root)
                         break;
                 }
             }
             else
             {
-                if (tmp.bAlloc.bytesUsed == 0)
+                if (tmp.bytesUsed == 0)
                 {
-                    removeNode(tmp, prev);
+                    removeNode(tmp);
                     if (!root)
                         break;
                 }
             }
 
-            prev = tmp;
             tmp = tmp.next;
         }
 
@@ -163,12 +209,26 @@ public:
             return null;
         }
 
+        swBitAlloc.start();
         void[] result = (cast(AlignedBlockNode*) root).bAlloc.allocate(n);
-
+        swBitAlloc.stop();
         static if (isShared)
-        lock.unlock();
+        {
+            atomicOp!"+="(root.bytesUsed, result.length);
+            lock.unlock();
+        }
+        else
+        {
+            root.bytesUsed += result.length;
+        }
 
         return result;
+    }
+
+    size_t goodAllocSize(const size_t n)
+    {
+        Allocator a = null;
+        return a.goodAllocSize(n);
     }
 }
 
@@ -282,7 +342,6 @@ version (unittest)
     }
 }
 
-/*
 @system unittest
 {
     import std.experimental.allocator.building_blocks.ascending_page_allocator : AscendingPageAllocator;
@@ -290,50 +349,30 @@ version (unittest)
     import std.random;
 
     alias SuperAllocator = Segregator!(
-            16,
-            AlignedBlockList!(BitmappedBlock!16, AscendingPageAllocator*, 1 << 16),
+        256,
+        AlignedBlockList!(BitmappedBlock!256, AscendingPageAllocator*, 1 << 16),
+        Segregator!(
+            512,
+            AlignedBlockList!(BitmappedBlock!512, AscendingPageAllocator*, 1 << 16),
             Segregator!(
-                32,
-                AlignedBlockList!(BitmappedBlock!32, AscendingPageAllocator*, 1 << 16),
+                1024,
+                AlignedBlockList!(BitmappedBlock!1024, AscendingPageAllocator*, 1 << 16),
                 Segregator!(
-                    64,
-                    AlignedBlockList!(BitmappedBlock!64, AscendingPageAllocator*, 1 << 16),
-                    Segregator!(
-                        128,
-                        AlignedBlockList!(BitmappedBlock!128, AscendingPageAllocator*, 1 << 16),
-                        Segregator!(
-                            256,
-                            AlignedBlockList!(BitmappedBlock!256, AscendingPageAllocator*, 1 << 16),
-                            Segregator!(
-                                512,
-                                AlignedBlockList!(BitmappedBlock!512, AscendingPageAllocator*, 1 << 16),
-                                Segregator!(
-                                    1024,
-                                    AlignedBlockList!(BitmappedBlock!1024, AscendingPageAllocator*, 1 << 16),
-                                    Segregator!(
-                                        2048,
-                                        AlignedBlockList!(BitmappedBlock!2048, AscendingPageAllocator*, 1 << 16),
-                                        AscendingPageAllocator*
-                                    )
-                                )
-                            )
-                        )
-                    )
+                    2048,
+                    AlignedBlockList!(BitmappedBlock!2048, AscendingPageAllocator*, 1 << 16),
+                    AscendingPageAllocator*
                 )
             )
-        );
+        )
+    );
 
     SuperAllocator a;
-    AscendingPageAllocator pageAlloc = AscendingPageAllocator(4096 * 4096);
+    auto pageAlloc = AscendingPageAllocator(4096 * 4096);
     a.allocatorForSize!4096 = &pageAlloc;
     a.allocatorForSize!2048.parent = &pageAlloc;
     a.allocatorForSize!1024.parent = &pageAlloc;
     a.allocatorForSize!512.parent = &pageAlloc;
     a.allocatorForSize!256.parent = &pageAlloc;
-    a.allocatorForSize!128.parent = &pageAlloc;
-    a.allocatorForSize!64.parent = &pageAlloc;
-    a.allocatorForSize!32.parent = &pageAlloc;
-    a.allocatorForSize!16.parent = &pageAlloc;
 
     auto rnd = Random();
 
@@ -370,51 +409,31 @@ version (unittest)
     import core.internal.spinlock : SpinLock;
 
     alias SuperAllocator = Segregator!(
-            16,
-            SharedAlignedBlockList!(BitmappedBlock!16, SharedAscendingPageAllocator*, 1 << 16),
+        256,
+        SharedAlignedBlockList!(SharedBitmappedBlock!256, SharedAscendingPageAllocator*, 1 << 16),
+        Segregator!(
+            512,
+            SharedAlignedBlockList!(SharedBitmappedBlock!512, SharedAscendingPageAllocator*, 1 << 16),
             Segregator!(
-                32,
-                SharedAlignedBlockList!(BitmappedBlock!32, SharedAscendingPageAllocator*, 1 << 16),
+                1024,
+                SharedAlignedBlockList!(SharedBitmappedBlock!1024, SharedAscendingPageAllocator*, 1 << 16),
                 Segregator!(
-                    64,
-                    SharedAlignedBlockList!(BitmappedBlock!64, SharedAscendingPageAllocator*, 1 << 16),
-                    Segregator!(
-                        128,
-                        SharedAlignedBlockList!(BitmappedBlock!128, SharedAscendingPageAllocator*, 1 << 16),
-                        Segregator!(
-                            256,
-                            SharedAlignedBlockList!(BitmappedBlock!256, SharedAscendingPageAllocator*, 1 << 16),
-                            Segregator!(
-                                512,
-                                SharedAlignedBlockList!(BitmappedBlock!512, SharedAscendingPageAllocator*, 1 << 16),
-                                Segregator!(
-                                    1024,
-                                    SharedAlignedBlockList!(BitmappedBlock!1024, SharedAscendingPageAllocator*, 1 << 16),
-                                    Segregator!(
-                                        2048,
-                                        SharedAlignedBlockList!(BitmappedBlock!2048, SharedAscendingPageAllocator*, 1 << 16),
-                                        SharedAscendingPageAllocator*
-                                    )
-                                )
-                            )
-                        )
-                    )
+                    2048,
+                    SharedAlignedBlockList!(SharedBitmappedBlock!2048, SharedAscendingPageAllocator*, 1 << 16),
+                    SharedAscendingPageAllocator*
                 )
             )
-        );
+        )
+    );
     enum numThreads = 10;
 
     SuperAllocator a;
-    shared SharedAscendingPageAllocator pageAlloc = SharedAscendingPageAllocator(4096 * 1024);
+    auto pageAlloc = SharedAscendingPageAllocator(4096 * 1024);
     a.allocatorForSize!4096 = &pageAlloc;
     a.allocatorForSize!2048.parent = &pageAlloc;
     a.allocatorForSize!1024.parent = &pageAlloc;
     a.allocatorForSize!512.parent = &pageAlloc;
     a.allocatorForSize!256.parent = &pageAlloc;
-    a.allocatorForSize!128.parent = &pageAlloc;
-    a.allocatorForSize!64.parent = &pageAlloc;
-    a.allocatorForSize!32.parent = &pageAlloc;
-    a.allocatorForSize!16.parent = &pageAlloc;
 
     void fun()
     {
@@ -450,48 +469,43 @@ version (unittest)
     }
     tg.joinAll();
 }
-*/
 
 @system unittest
 {
     import std.experimental.allocator.building_blocks.region;
     import std.experimental.allocator.building_blocks.ascending_page_allocator;
     import std.random;
+    import std.algorithm.sorting : sort;
     import core.thread : ThreadGroup;
     import core.internal.spinlock : SpinLock;
 
-    alias SuperAllocator = SharedAlignedBlockList!(SharedRegion!(NullAllocator, 1), SharedAscendingPageAllocator, 1 << 16);
-    shared SharedAscendingPageAllocator pageAlloc = SharedAscendingPageAllocator(4096 * 1024);
+    enum pageSize = 4096;
     enum numThreads = 10;
+    enum maxIter = 20;
+    enum totalAllocs = maxIter * numThreads;
+    size_t count = 0;
+    SpinLock lock = SpinLock(SpinLock.Contention.brief);
+
+    alias SuperAllocator = SharedAlignedBlockList!(SharedRegion!(NullAllocator, 1), SharedAscendingPageAllocator, 1 << 16);
+    void[][totalAllocs] buf;
 
     SuperAllocator a;
-    a.parent = pageAlloc;
+    a.parent = SharedAscendingPageAllocator(4096 * 1024);
 
     void fun()
     {
         auto rnd = Random();
 
-        size_t maxIter = 20;
-        enum testNum = 5;
-        void[][testNum] buf;
-        size_t pageSize = 4096;
-        int maxSize = 8192;
-        for (int i = 0; i < maxIter; i += testNum)
+        foreach(i; 0 .. maxIter)
         {
-            foreach (j; 0 .. testNum)
-            {
-                auto size = uniform(1, maxSize + 1, rnd);
-                buf[j] = a.allocate(size);
-                assert(buf[j].length == size);
-                testrw(buf[j]);
-            }
+            auto size = uniform(1, pageSize + 1, rnd);
+            void[] b = a.allocate(size);
+            assert(b.length == size);
+            testrw(b);
 
-            randomShuffle(buf[]);
-
-            foreach (j; 0 .. testNum)
-            {
-                assert(a.deallocate(buf[j]));
-            }
+            lock.lock();
+            buf[count++] = b;
+            lock.unlock();
         }
     }
     auto tg = new ThreadGroup;
@@ -500,4 +514,162 @@ version (unittest)
         tg.create(&fun);
     }
     tg.joinAll();
+
+    sort!((a, b) => a.ptr < b.ptr)(buf[0 .. totalAllocs]);
+    foreach (i; 0 .. totalAllocs - 1)
+    {
+        assert(buf[i].ptr + a.goodAllocSize(buf[i].length) <= buf[i + 1].ptr);
+    }
+
+    foreach (i; 0 .. totalAllocs)
+    {
+        assert(a.deallocate(buf[totalAllocs - 1 - i]));
+    }
+}
+
+void main()
+{
+    import std.experimental.allocator.building_blocks.ascending_page_allocator;
+    import std.experimental.allocator.building_blocks.segregator;
+    import std.experimental.allocator.mallocator;
+    import std.random;
+    import core.thread : ThreadGroup;
+    import core.internal.spinlock : SpinLock;
+    import std.stdio;
+
+    static void testrw(void[] b)
+    {
+        ubyte* buf = cast(ubyte*) b.ptr;
+        size_t len = (b.length).roundUpToMultipleOf(4096);
+        for (int i = 0; i < len; i += 4096)
+        {
+            buf[i] =  (cast(ubyte)i % 256);
+            assert(buf[i] == (cast(ubyte)i % 256));
+        }
+    }
+
+    alias SuperAllocator = Segregator!(
+        16,
+        AlignedBlockList!(BitmappedBlock2!16, AscendingPageAllocator*, 1 << 16),
+        Segregator!(
+
+        32,
+        AlignedBlockList!(BitmappedBlock2!32, AscendingPageAllocator*, 1 << 17),
+        Segregator!(
+
+        64,
+        AlignedBlockList!(BitmappedBlock2!64, AscendingPageAllocator*, 1 << 18),
+        Segregator!(
+
+        128,
+        AlignedBlockList!(BitmappedBlock2!128, AscendingPageAllocator*, 1 << 19),
+        Segregator!(
+
+        256,
+        AlignedBlockList!(BitmappedBlock2!256, AscendingPageAllocator*, 1 << 20),
+        Segregator!(
+
+        512,
+        AlignedBlockList!(BitmappedBlock2!512, AscendingPageAllocator*, 1 << 21),
+        Segregator!(
+
+        1024,
+        AlignedBlockList!(SharedBitmappedBlock!1024, AscendingPageAllocator*, 1 << 22),
+        Segregator!(
+
+        2048,
+        AlignedBlockList!(SharedBitmappedBlock!2048, AscendingPageAllocator*, 1 << 22),
+        Segregator!(
+
+        1 << 12,
+        AlignedBlockList!(SharedBitmappedBlock!(1 << 12), AscendingPageAllocator*, 1 << 22),
+        Segregator!(
+
+        1 << 13,
+        AlignedBlockList!(SharedBitmappedBlock!(1 << 13), AscendingPageAllocator*, 1 << 22),
+        Segregator!(
+
+        1 << 14,
+        AlignedBlockList!(SharedBitmappedBlock!(1 << 14), AscendingPageAllocator*, 1 << 22),
+        Segregator!(
+
+        1 << 15,
+        AlignedBlockList!(SharedBitmappedBlock!(1 << 15), AscendingPageAllocator*, 1 << 22),
+        AscendingPageAllocator*
+        ))))))))))));
+
+    enum myAlloc = 1;
+    static if (myAlloc)
+    {
+        SuperAllocator a;
+        auto pageAlloc = AscendingPageAllocator(1UL << 40);
+        a.allocatorForSize!(1 << 16) = &pageAlloc;
+        a.allocatorForSize!(1 << 15).parent = &pageAlloc;
+        a.allocatorForSize!(1 << 14).parent = &pageAlloc;
+        a.allocatorForSize!(1 << 13).parent = &pageAlloc;
+        a.allocatorForSize!(1 << 12).parent = &pageAlloc;
+        a.allocatorForSize!2048.parent = &pageAlloc;
+        a.allocatorForSize!1024.parent = &pageAlloc;
+        a.allocatorForSize!512.parent = &pageAlloc;
+        a.allocatorForSize!256.parent = &pageAlloc;
+        a.allocatorForSize!128.parent = &pageAlloc;
+        a.allocatorForSize!64.parent = &pageAlloc;
+        a.allocatorForSize!32.parent = &pageAlloc;
+        a.allocatorForSize!16.parent = &pageAlloc;
+    }
+    else
+    {
+        alias a = Mallocator.instance;
+    }
+
+    auto rnd = Random(1000);
+    auto swAlloc = StopWatch(AutoStart.no);
+    auto swDirty = StopWatch(AutoStart.no);
+    auto swDealloc = StopWatch(AutoStart.no);
+    auto swShuffle = StopWatch(AutoStart.no);
+    swBitAlloc = StopWatch(AutoStart.no);
+    swPageAlloc = StopWatch(AutoStart.no);
+    size_t maxIter = 10000;
+    enum testNum = 10000;
+    void[][testNum] buf;
+    size_t pageSize = 4096;
+    for (int i = 0; i < maxIter; i ++)
+    {
+        foreach (j; 0 .. testNum)
+        {
+            size_t size;
+            auto allocationType = uniform(1, 7, rnd);
+
+            if (allocationType <= 6) size = uniform(4, 7, rnd);
+            else if (allocationType <= 9) size = uniform(7, 16, rnd);
+            else size = 17;
+
+            swAlloc.start();
+            buf[j] = a.allocate(1 << size);
+            swAlloc.stop();
+
+            assert(buf[j].length == (1 << size));
+
+            swDirty.start();
+            testrw(buf[j]);
+            swDirty.stop();
+        }
+
+        swShuffle.start();
+        randomShuffle(buf[]);
+        swShuffle.stop();
+
+        swDealloc.start();
+        foreach (j; 0 .. testNum)
+        {
+            assert(a.deallocate(buf[j]));
+        }
+        swDealloc.stop();
+    }
+
+    writeln("Allocation time totals: ", swAlloc.peek().toString());
+    writeln("Deallocation time totals: ", swDealloc.peek().toString());
+    writeln("Dirty time totals: ", swDirty.peek().toString());
+    writeln("BitmappedBlock time totals: ", swBitAlloc.peek().toString());
+    writeln("AscendingPage time totals: ", swPageAlloc.peek().toString());
 }

@@ -365,9 +365,8 @@ struct BitmappedBlock(size_t theBlockSize, uint theAlignment = platformAlignment
         {
             _control[_freshBit .. _freshBit + blocks] = 1;
             _freshBit += blocks;
-            return result[0 .. s];
         }
-        return null;
+        return result;
     }
 
     /**
@@ -685,6 +684,7 @@ struct BitmappedBlock(size_t theBlockSize, uint theAlignment = platformAlignment
         b = begin[0 .. end - begin];
         // Round up size to multiple of block size
         auto blocks = b.length.divideRoundUp(blockSize);
+
         // Get into details
         auto wordIdx = blockIdx / 64, msbIdx = cast(uint) (blockIdx % 64);
         if (_startIdx > wordIdx) _startIdx = wordIdx;
@@ -833,6 +833,20 @@ struct BitmappedBlock(size_t theBlockSize, uint theAlignment = platformAlignment
     import std.experimental.allocator.gc_allocator : GCAllocator;
     uint blockSize = 64;
     testAllocator!(() => BitmappedBlock!(chooseAtRuntime, 8, GCAllocator)(1024 * 64, blockSize));
+}
+
+@system unittest
+{
+    import std.experimental.allocator.mallocator : Mallocator;
+    testAllocator!(() => SharedBitmappedBlock!(64, 8, Mallocator)(1024 * 64));
+}
+
+@system unittest
+{
+    // Test chooseAtRuntime
+    import std.experimental.allocator.mallocator : Mallocator;
+    uint blockSize = 64;
+    testAllocator!(() => SharedBitmappedBlock!(chooseAtRuntime, 8, Mallocator)(1024 * 64, blockSize));
 }
 
 @system unittest
@@ -1031,93 +1045,6 @@ struct BitmappedBlock(size_t theBlockSize, uint theAlignment = platformAlignment
     assert(!a.allocateFresh(16));
 }
 
-@system unittest
-{
-    import std.experimental.allocator.building_blocks.segregator : Segregator;
-    import std.experimental.allocator.mallocator : Mallocator;
-    import std.random;
-
-    alias SuperAllocator = Segregator!(
-        16,
-        BitmappedBlock!(16),
-        Segregator!(
-            32,
-            BitmappedBlock!(32),
-            Segregator!(
-                64,
-                BitmappedBlock!(64),
-                Segregator!(
-                    128,
-                    BitmappedBlock!(128),
-                    Segregator!(
-                        256,
-                        BitmappedBlock!(256),
-                        Segregator!(
-                            512,
-                            BitmappedBlock!(512),
-                            Segregator!(
-                                1024,
-                                BitmappedBlock!(1024),
-                                BitmappedBlock!(2048)
-                            )
-                        )
-                    )
-                )
-            )
-        )
-    );
-
-    auto maxSize = 2049;
-    auto bufSize = 10000;
-    enum numAllocs = 10000;
-    void[][numAllocs] buf;
-
-    import std.random;
-    auto rnd = Random(1000);
-    alias m = Mallocator.instance;
-    void[] b = m.allocate(bufSize);
-    SuperAllocator a;
-    a.allocatorForSize!2048 = BitmappedBlock!2048((cast(ubyte*) b.ptr)[0 .. b.length]);
-
-    b = m.allocate(bufSize);
-    a.allocatorForSize!1024 = BitmappedBlock!1024((cast(ubyte*) b.ptr)[0 .. b.length]);
-
-    b = m.allocate(bufSize);
-    a.allocatorForSize!512 = BitmappedBlock!512((cast(ubyte*) b.ptr)[0 .. b.length]);
-
-    b = m.allocate(bufSize);
-    a.allocatorForSize!256 = BitmappedBlock!256((cast(ubyte*) b.ptr)[0 .. b.length]);
-
-    b = m.allocate(bufSize);
-    a.allocatorForSize!128 = BitmappedBlock!128((cast(ubyte*) b.ptr)[0 .. b.length]);
-
-    b = m.allocate(bufSize);
-    a.allocatorForSize!64 = BitmappedBlock!64((cast(ubyte*) b.ptr)[0 .. b.length]);
-
-    b = m.allocate(bufSize);
-    a.allocatorForSize!32 = BitmappedBlock!32((cast(ubyte*) b.ptr)[0 .. b.length]);
-
-    b = m.allocate(bufSize);
-    a.allocatorForSize!16 = BitmappedBlock!16((cast(ubyte*) b.ptr)[0 .. b.length]);
-
-    for (int i = 0; i < numAllocs; i++)
-    {
-        int size = uniform(1, maxSize, rnd);
-        buf[i] = a.allocate(size);
-        if (buf[i])
-            assert(buf[i].length == size);
-
-    }
-
-    randomShuffle(buf[]);
-
-    for (int i = 0; i < numAllocs; i++)
-    {
-        if (buf[i])
-            assert(a.deallocate(buf[i]));
-
-    }
-}
 
 @system unittest
 {
@@ -1832,4 +1759,630 @@ private struct BitVector
     assert(v.findZeros(640, 0) == 0);
     assert(v.findZeros(641, 1) == ulong.max);
     assert(v.findZeros(641, 100) == ulong.max);
+}
+
+/**
+The threadsafe implementation of the $(LREF BitmappedBlock).
+For performance reasons, the `SharedBitmappedBlock` each allocation request
+must be at most `theBlockSize`.
+The allocator stores metadata in the form of a bitmap at the beginning of the payload.
+Allocations and deallocations involve quickly searching through the bitmap and atomically changing
+the metadata, guaranteeing high performance and data coherency.
+*/
+shared struct SharedBitmappedBlock(size_t theBlockSize,
+    size_t theAlignment = platformAlignment, ParentAllocator = NullAllocator)
+{
+nothrow @nogc:
+    import std.traits : hasMember;
+    import std.typecons : Ternary;
+
+    /**
+    If `blockSize == chooseAtRuntime`, `SharedBitmappedBlock` offers a read/write
+    property `blockSize`. It must be set before any use of the allocator.
+    Otherwise (i.e. `theBlockSize` is a legit constant), `blockSize` is
+    an alias for `theBlockSize`. Whether constant or variable, must also be
+    a multiple of `alignment`. This constraint is `assert`ed statically
+    and dynamically.
+    */
+    static if (theBlockSize != chooseAtRuntime)
+    {
+        alias blockSize = theBlockSize;
+    }
+    else
+    {
+        @property uint blockSize() { return _blockSize; }
+        @property void blockSize(uint s)
+        {
+            assert(_control.length == 0 && s % alignment == 0);
+            _blockSize = s;
+        }
+        private uint _blockSize;
+    }
+
+    static if (is(ParentAllocator == NullAllocator))
+    {
+        private enum parentAlignment = platformAlignment;
+    }
+    else
+    {
+        private alias parentAlignment = ParentAllocator.alignment;
+        static assert(parentAlignment >= ulong.alignof);
+    }
+
+    /**
+    The _alignment offered is user-configurable statically through parameter
+    `theAlignment`, defaulted to `platformAlignment`.
+    */
+    alias alignment = theAlignment;
+
+    // state {
+    /**
+    The _parent allocator. Depending on whether `ParentAllocator` holds state
+    or not, this is a member variable or an alias for
+    `ParentAllocator.instance`.
+    */
+    static if (stateSize!ParentAllocator)
+    {
+        ParentAllocator parent;
+    }
+    else
+    {
+        alias parent = ParentAllocator.instance;
+    }
+
+    private size_t _blocks;
+    private ulong[] _control;
+    private void[] _payload;
+
+    pure nothrow @safe @nogc
+    private size_t totalAllocation(size_t capacity)
+    {
+        auto blocks = capacity.divideRoundUp(blockSize);
+        auto leadingUlongs = blocks.divideRoundUp(64);
+        import std.algorithm.comparison : min;
+        immutable initialAlignment = min(parentAlignment,
+            1U << trailingZeros(leadingUlongs * 8));
+        auto maxSlack = alignment <= initialAlignment
+            ? 0
+            : alignment - initialAlignment;
+        return leadingUlongs * 8 + maxSlack + blockSize * blocks;
+    }
+
+    /**
+    Constructs a block allocator given a hunk of memory, or a desired capacity
+    in bytes.
+
+    $(UL
+    $(LI If `ParentAllocator` is $(REF_ALTTEXT `NullAllocator`, NullAllocator, std,experimental,allocator,building_blocks,null_allocator),
+    only the constructor taking `data` is defined and the user is responsible for freeing `data` if desired.)
+    $(LI Otherwise, both constructors are defined. The `data`-based
+    constructor assumes memory has been allocated with the parent allocator.
+    The `capacity`-based constructor uses `ParentAllocator` to allocate
+    an appropriate contiguous hunk of memory. Regardless of the constructor
+    used, the destructor releases the memory by using `ParentAllocator.deallocate`.)
+    )
+    */
+    this(ubyte[] data)
+    {
+        immutable a = data.ptr.effectiveAlignment;
+        assert(a >= size_t.alignof || !data.ptr,
+            "Data must be aligned properly");
+
+        immutable ulong totalBits = data.length * 8;
+        immutable ulong bitsPerBlock = blockSize * 8 + 1;
+        _blocks = totalBits / bitsPerBlock;
+
+        // Reality is a bit more complicated, iterate until a good number of
+        // blocks found.
+        size_t localBlocks;
+        for (localBlocks = _blocks; localBlocks; --localBlocks)
+        {
+            immutable controlWords = localBlocks.divideRoundUp(64);
+            auto payload = data[controlWords * 8 .. $].roundStartToMultipleOf(
+                alignment);
+            if (payload.length < localBlocks * blockSize)
+            {
+                // Overestimated
+                continue;
+            }
+            _control = (cast(shared(ulong*)) data.ptr)[0 .. controlWords];
+            _control[] = 0;
+            _payload = cast(typeof(_payload)) payload;
+            break;
+        }
+        _blocks = cast(typeof(_blocks)) localBlocks;
+    }
+
+    /// Ditto
+    static if (chooseAtRuntime == theBlockSize)
+    this(ubyte[] data, uint blockSize)
+    {
+        this._blockSize = blockSize;
+        this(data);
+    }
+
+    /// Ditto
+    static if (!is(ParentAllocator == NullAllocator))
+    this(size_t capacity)
+    {
+        size_t toAllocate = totalAllocation(capacity);
+        auto data = cast(ubyte[]) (parent.allocate(toAllocate));
+        this(data);
+        assert(_blocks * blockSize >= capacity);
+    }
+
+    /// Ditto
+    static if (!is(ParentAllocator == NullAllocator) &&
+        chooseAtRuntime == theBlockSize)
+    this(size_t capacity, uint blockSize)
+    {
+        this._blockSize = blockSize;
+        this(capacity);
+    }
+
+    /**
+    Returns the actual bytes allocated when `n` bytes are requested, i.e.
+    `n.roundUpToMultipleOf(blockSize)`.
+    */
+    pure nothrow @safe @nogc
+    size_t goodAllocSize(size_t n)
+    {
+        return n.roundUpToMultipleOf(blockSize);
+    }
+
+    /**
+    Allocates `s` bytes of memory and returns it, or `null` if memory
+    could not be allocated.
+
+    The `SharedBitmappedBlock` cannot allocate more than the given block size.
+    Allocations are satisfied by searching the first unset bit in the bitmap,
+    and atomically setting it.
+    In rare memory pressure scenarios, the allocation could fail.
+    */
+    @trusted void[] allocate(const size_t s)
+    {
+        import core.atomic : cas, atomicLoad, atomicOp;
+
+        if (s.divideRoundUp(blockSize) != 1)
+            return null;
+
+        // First zero bit position for all values in the 0 - 255 range
+        // for fast lookup
+        static ubyte[] firstZero = [
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+            1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+            1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+            1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2,
+            2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+            2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+            4, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 6, 6, 7
+        ];
+
+        foreach (size_t i; 0 .. _control.length)
+        {
+            ulong controlVal, newControlVal, bitIndex;
+            do
+            {
+                bitIndex = 0;
+                newControlVal = 0;
+                controlVal = atomicLoad(_control[i]);
+
+                // skip all control words which have all bits set
+                if (controlVal == ulong.max)
+                    break;
+
+                // fast lookup of first byte which has at least one zero bit
+                foreach (byteIndex; 0 .. 8)
+                {
+                    ulong mask = (0xFFUL << (8 * (7 - byteIndex)));
+                    if ((mask & controlVal) != mask)
+                    {
+                        ubyte byteVal = cast(ubyte) ((mask & controlVal) >> (8 * (7 - byteIndex)));
+                        bitIndex += firstZero[byteVal];
+                        newControlVal = controlVal | (1UL << (63 - bitIndex));
+                        break;
+                    }
+                    bitIndex += 8;
+                }
+            } while (!cas(&_control[i], controlVal, newControlVal));
+
+            auto blockIndex = bitIndex + 64 * i;
+            if (controlVal != ulong.max && blockIndex < _blocks)
+            {
+                size_t payloadBlockStart = cast(size_t) blockIndex * blockSize;
+                return cast(void[]) _payload[payloadBlockStart .. payloadBlockStart + s];
+            }
+        }
+
+        return null;
+    }
+
+    /**
+    Deallocates the given buffer `b`, by atomically setting the corresponding
+    bit to `0`. `b` must be valid, and cannot contain multiple adjacent `blocks`.
+    */
+    bool deallocate(void[] b)
+    {
+        import core.atomic : atomicOp;
+
+        if (b is null)
+            return true;
+
+        auto blockIndex = (b.ptr - _payload.ptr) / blockSize;
+        auto controlIndex = blockIndex / 64;
+        auto bitIndex = blockIndex % 64;
+        atomicOp!"&="(_control[controlIndex], ~(1UL << (63 - bitIndex)));
+
+        return true;
+    }
+
+    /**
+    Expands in place a buffer previously allocated by `SharedBitmappedBlock`.
+    Expansion fails if the new length exceeds the block size.
+    */
+    bool expand(ref void[] b, immutable size_t delta)
+    {
+        if (delta == 0)
+            return true;
+
+        immutable newLength = delta + b.length;
+        if (b is null || newLength > blockSize)
+            return false;
+
+        b = b.ptr[0 .. newLength];
+        return true;
+    }
+
+    /**
+    Returns `Ternary.yes` if `b` belongs to the `SharedBitmappedBlock` object,
+    `Ternary.no` otherwise. Never returns `Ternary.unkown`. (This
+    method is somewhat tolerant in that accepts an interior slice.)
+    */
+    pure nothrow @trusted @nogc
+    Ternary owns(const void[] b) const
+    {
+        assert(b || b.length == 0, "Corrupt block.");
+        return Ternary(b && _payload && (&b[0] >= &_payload[0])
+               && (&b[0] + b.length) <= (&_payload[0] + _payload.length));
+    }
+}
+
+@system unittest
+{
+    import std.experimental.allocator.mallocator : Mallocator;
+
+    static void testAlloc(Allocator)(ref Allocator a)
+    {
+        import core.thread : ThreadGroup;
+        import std.algorithm.sorting : sort;
+        import core.internal.spinlock : SpinLock;
+
+        SpinLock lock = SpinLock(SpinLock.Contention.brief);
+        enum numThreads = 100;
+        void[][numThreads] buf;
+        size_t count = 0;
+
+        void fun()
+        {
+            void[] b = a.allocate(63);
+            assert(b.length == 63);
+
+            lock.lock();
+            buf[count] = b;
+            count++;
+            lock.unlock();
+        }
+
+        auto tg = new ThreadGroup;
+        foreach (i; 0 .. numThreads)
+        {
+            tg.create(&fun);
+        }
+        tg.joinAll();
+
+        sort!((a, b) => a.ptr < b.ptr)(buf[0 .. numThreads]);
+        foreach (i; 0 .. numThreads - 1)
+        {
+            assert(buf[i].ptr + a.goodAllocSize(buf[i].length) <= buf[i + 1].ptr);
+        }
+
+        foreach (i; 0 .. numThreads)
+        {
+            assert(a.deallocate(buf[i]));
+        }
+    }
+
+    auto alloc = SharedBitmappedBlock!(64, platformAlignment, Mallocator)(1024 * 1024);
+    testAlloc(alloc);
+}
+
+/**
+The threadsafe implementation of the $(LREF BitmappedBlock).
+For performance reasons, the `SharedBitmappedBlock` each allocation request
+must be at most `theBlockSize`.
+The allocator stores metadata in the form of a bitmap at the beginning of the payload.
+Allocations and deallocations involve quickly searching through the bitmap and atomically changing
+the metadata, guaranteeing high performance and data coherency.
+*/
+struct BitmappedBlock2(size_t theBlockSize,
+    size_t theAlignment = platformAlignment, ParentAllocator = NullAllocator)
+{
+nothrow @nogc:
+    import std.traits : hasMember;
+    import std.typecons : Ternary;
+
+    /**
+    If `blockSize == chooseAtRuntime`, `SharedBitmappedBlock` offers a read/write
+    property `blockSize`. It must be set before any use of the allocator.
+    Otherwise (i.e. `theBlockSize` is a legit constant), `blockSize` is
+    an alias for `theBlockSize`. Whether constant or variable, must also be
+    a multiple of `alignment`. This constraint is `assert`ed statically
+    and dynamically.
+    */
+    static if (theBlockSize != chooseAtRuntime)
+    {
+        alias blockSize = theBlockSize;
+    }
+    else
+    {
+        @property uint blockSize() { return _blockSize; }
+        @property void blockSize(uint s)
+        {
+            assert(_control.length == 0 && s % alignment == 0);
+            _blockSize = s;
+        }
+        private uint _blockSize;
+    }
+
+    static if (is(ParentAllocator == NullAllocator))
+    {
+        private enum parentAlignment = platformAlignment;
+    }
+    else
+    {
+        private alias parentAlignment = ParentAllocator.alignment;
+        static assert(parentAlignment >= ulong.alignof);
+    }
+
+    /**
+    The _alignment offered is user-configurable statically through parameter
+    `theAlignment`, defaulted to `platformAlignment`.
+    */
+    alias alignment = theAlignment;
+
+    // state {
+    /**
+    The _parent allocator. Depending on whether `ParentAllocator` holds state
+    or not, this is a member variable or an alias for
+    `ParentAllocator.instance`.
+    */
+    static if (stateSize!ParentAllocator)
+    {
+        ParentAllocator parent;
+    }
+    else
+    {
+        alias parent = ParentAllocator.instance;
+    }
+
+    private size_t _blocks;
+    private ulong[] _control;
+    private void[] _payload;
+
+    pure nothrow @safe @nogc
+    private size_t totalAllocation(size_t capacity)
+    {
+        auto blocks = capacity.divideRoundUp(blockSize);
+        auto leadingUlongs = blocks.divideRoundUp(64);
+        import std.algorithm.comparison : min;
+        immutable initialAlignment = min(parentAlignment,
+            1U << trailingZeros(leadingUlongs * 8));
+        auto maxSlack = alignment <= initialAlignment
+            ? 0
+            : alignment - initialAlignment;
+        return leadingUlongs * 8 + maxSlack + blockSize * blocks;
+    }
+
+    /**
+    Constructs a block allocator given a hunk of memory, or a desired capacity
+    in bytes.
+
+    $(UL
+    $(LI If `ParentAllocator` is $(REF_ALTTEXT `NullAllocator`, NullAllocator, std,experimental,allocator,building_blocks,null_allocator),
+    only the constructor taking `data` is defined and the user is responsible for freeing `data` if desired.)
+    $(LI Otherwise, both constructors are defined. The `data`-based
+    constructor assumes memory has been allocated with the parent allocator.
+    The `capacity`-based constructor uses `ParentAllocator` to allocate
+    an appropriate contiguous hunk of memory. Regardless of the constructor
+    used, the destructor releases the memory by using `ParentAllocator.deallocate`.)
+    )
+    */
+    this(ubyte[] data)
+    {
+        immutable a = data.ptr.effectiveAlignment;
+        assert(a >= size_t.alignof || !data.ptr,
+            "Data must be aligned properly");
+
+        immutable ulong totalBits = data.length * 8;
+        immutable ulong bitsPerBlock = blockSize * 8 + 1;
+        _blocks = totalBits / bitsPerBlock;
+
+        // Reality is a bit more complicated, iterate until a good number of
+        // blocks found.
+        size_t localBlocks;
+        for (localBlocks = _blocks; localBlocks; --localBlocks)
+        {
+            immutable controlWords = localBlocks.divideRoundUp(64);
+            auto payload = data[controlWords * 8 .. $].roundStartToMultipleOf(
+                alignment);
+            if (payload.length < localBlocks * blockSize)
+            {
+                // Overestimated
+                continue;
+            }
+            _control = (cast(ulong*) data.ptr)[0 .. controlWords];
+            _control[] = 0;
+            _payload = cast(typeof(_payload)) payload;
+            break;
+        }
+        _blocks = cast(typeof(_blocks)) localBlocks;
+    }
+
+    /// Ditto
+    static if (chooseAtRuntime == theBlockSize)
+    this(ubyte[] data, uint blockSize)
+    {
+        this._blockSize = blockSize;
+        this(data);
+    }
+
+    /// Ditto
+    static if (!is(ParentAllocator == NullAllocator))
+    this(size_t capacity)
+    {
+        size_t toAllocate = totalAllocation(capacity);
+        auto data = cast(ubyte[]) (parent.allocate(toAllocate));
+        this(data);
+        assert(_blocks * blockSize >= capacity);
+    }
+
+    /// Ditto
+    static if (!is(ParentAllocator == NullAllocator) &&
+        chooseAtRuntime == theBlockSize)
+    this(size_t capacity, uint blockSize)
+    {
+        this._blockSize = blockSize;
+        this(capacity);
+    }
+
+    /**
+    Returns the actual bytes allocated when `n` bytes are requested, i.e.
+    `n.roundUpToMultipleOf(blockSize)`.
+    */
+    pure nothrow @safe @nogc
+    size_t goodAllocSize(size_t n)
+    {
+        return n.roundUpToMultipleOf(blockSize);
+    }
+
+    /**
+    Allocates `s` bytes of memory and returns it, or `null` if memory
+    could not be allocated.
+
+    The `SharedBitmappedBlock` cannot allocate more than the given block size.
+    Allocations are satisfied by searching the first unset bit in the bitmap,
+    and atomically setting it.
+    In rare memory pressure scenarios, the allocation could fail.
+    */
+    @trusted void[] allocate(const size_t s)
+    {
+        import core.atomic : cas, atomicLoad, atomicOp;
+
+        if (s.divideRoundUp(blockSize) != 1)
+            return null;
+
+        // First zero bit position for all values in the 0 - 255 range
+        // for fast lookup
+        static ubyte[] firstZero = [
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+            1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+            1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+            1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2,
+            2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+            2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+            4, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 6, 6, 7
+        ];
+
+        foreach (size_t i; 0 .. _control.length)
+        {
+            size_t bitIndex = 0;
+            // skip all control words which have all bits set
+            if (_control[i] == ulong.max)
+                continue;
+
+            // fast lookup of first byte which has at least one zero bit
+            foreach (byteIndex; 0 .. 8)
+            {
+                ulong mask = (0xFFUL << (8 * (7 - byteIndex)));
+                if ((mask & _control[i]) != mask)
+                {
+                    ubyte byteVal = cast(ubyte) ((mask & _control[i]) >> (8 * (7 - byteIndex)));
+                    bitIndex += firstZero[byteVal];
+                    _control[i] |= (1UL << (63 - bitIndex));
+                    break;
+                }
+                bitIndex += 8;
+            }
+
+            auto blockIndex = bitIndex + 64 * i;
+            if (blockIndex < _blocks)
+            {
+                size_t payloadBlockStart = cast(size_t) blockIndex * blockSize;
+                return cast(void[]) _payload[payloadBlockStart .. payloadBlockStart + s];
+            }
+        }
+
+        return null;
+    }
+
+    /**
+    Deallocates the given buffer `b`, by atomically setting the corresponding
+    bit to `0`. `b` must be valid, and cannot contain multiple adjacent `blocks`.
+    */
+    bool deallocate(void[] b)
+    {
+        import core.atomic : atomicOp;
+
+        if (b is null)
+            return true;
+
+        auto blockIndex = (b.ptr - _payload.ptr) / blockSize;
+        auto controlIndex = blockIndex / 64;
+        auto bitIndex = blockIndex % 64;
+        _control[controlIndex] &= ~(1UL << (63 - bitIndex));
+
+        return true;
+    }
+
+    /**
+    Expands in place a buffer previously allocated by `SharedBitmappedBlock`.
+    Expansion fails if the new length exceeds the block size.
+    */
+    bool expand(ref void[] b, immutable size_t delta)
+    {
+        if (delta == 0)
+            return true;
+
+        immutable newLength = delta + b.length;
+        if (b is null || newLength > blockSize)
+            return false;
+
+        b = b.ptr[0 .. newLength];
+        return true;
+    }
+
+    /**
+    Returns `Ternary.yes` if `b` belongs to the `SharedBitmappedBlock` object,
+    `Ternary.no` otherwise. Never returns `Ternary.unkown`. (This
+    method is somewhat tolerant in that accepts an interior slice.)
+    */
+    pure nothrow @trusted @nogc
+    Ternary owns(const void[] b) const
+    {
+        assert(b || b.length == 0, "Corrupt block.");
+        return Ternary(b && _payload && (&b[0] >= &_payload[0])
+               && (&b[0] + b.length) <= (&_payload[0] + _payload.length));
+    }
 }
