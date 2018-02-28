@@ -2174,6 +2174,7 @@ nothrow @nogc:
     private size_t _blocks;
     private ulong[] _control;
     private void[] _payload;
+    private size_t _startIdx;
 
     pure nothrow @safe @nogc
     private size_t totalAllocation(size_t capacity)
@@ -2305,8 +2306,10 @@ nothrow @nogc:
             4, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 6, 6, 7
         ];
 
-        foreach (size_t i; 0 .. _control.length)
+        _startIdx++;
+        for (size_t idx = _startIdx; idx < _startIdx + _control.length; idx++)
         {
+            size_t i = idx % _control.length;
             size_t bitIndex = 0;
             // skip all control words which have all bits set
             if (_control[i] == ulong.max)
