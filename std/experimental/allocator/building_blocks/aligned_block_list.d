@@ -7,6 +7,9 @@ import std.experimental.allocator.building_blocks.null_allocator;
 import std.experimental.allocator.building_blocks.region;
 import std.datetime.stopwatch;
 
+enum timeDbg = 0;
+
+
 StopWatch swPageAlloc;
 StopWatch swBitAlloc;
 
@@ -77,9 +80,11 @@ private:
 
         auto localRoot = cast(AlignedBlockNode*) root;
         auto newNode = cast(AlignedBlockNode*) buf;
+        static if (timeDbg)
         swPageAlloc.start();
         ubyte[] payload = ((cast(ubyte*) buf[AlignedBlockNode.sizeof .. $])[0 .. buf.length - AlignedBlockNode.sizeof]);
         newNode.bAlloc = Allocator(payload);
+        static if (timeDbg)
         swPageAlloc.stop();
 
         newNode.next = localRoot;
@@ -147,8 +152,10 @@ public:
                 lock.unlock();
             }
 
+            static if (timeDbg)
             swBitAlloc.start();
             auto result = tmp.bAlloc.allocate(n);
+            static if (timeDbg)
             swBitAlloc.stop();
             if (result.length == n)
             {
@@ -209,8 +216,10 @@ public:
             return null;
         }
 
+        static if (timeDbg)
         swBitAlloc.start();
         void[] result = (cast(AlignedBlockNode*) root).bAlloc.allocate(n);
+        static if (timeDbg)
         swBitAlloc.stop();
         static if (isShared)
         {
@@ -638,38 +647,48 @@ void main()
         foreach (j; 0 .. testNum)
         {
             size_t size;
-            auto allocationType = uniform(1, 7, rnd);
-
+            auto allocationType = uniform(1, 11, rnd);
             if (allocationType <= 6) size = uniform(4, 7, rnd);
             else if (allocationType <= 9) size = uniform(7, 16, rnd);
             else size = 17;
 
+            static if (timeDbg)
             swAlloc.start();
             buf[j] = a.allocate(1 << size);
+            static if (timeDbg)
             swAlloc.stop();
 
             assert(buf[j].length == (1 << size));
 
+            static if (timeDbg)
             swDirty.start();
             testrw(buf[j]);
+            static if (timeDbg)
             swDirty.stop();
         }
 
+        static if (timeDbg)
         swShuffle.start();
         randomShuffle(buf[]);
+        static if (timeDbg)
         swShuffle.stop();
 
+        static if (timeDbg)
         swDealloc.start();
         foreach (j; 0 .. testNum)
         {
             assert(a.deallocate(buf[j]));
         }
+        static if (timeDbg)
         swDealloc.stop();
     }
 
-    writeln("Allocation time totals: ", swAlloc.peek().toString());
-    writeln("Deallocation time totals: ", swDealloc.peek().toString());
-    writeln("Dirty time totals: ", swDirty.peek().toString());
-    writeln("BitmappedBlock time totals: ", swBitAlloc.peek().toString());
-    writeln("AscendingPage time totals: ", swPageAlloc.peek().toString());
+    static if (timeDbg)
+    {
+        writeln("Allocation time totals: ", swAlloc.peek().toString());
+        writeln("Deallocation time totals: ", swDealloc.peek().toString());
+        writeln("Dirty time totals: ", swDirty.peek().toString());
+        writeln("BitmappedBlock time totals: ", swBitAlloc.peek().toString());
+        writeln("AscendingPage time totals: ", swPageAlloc.peek().toString());
+    }
 }
