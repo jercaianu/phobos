@@ -12,6 +12,10 @@ enum timeDbg = 0;
 
 StopWatch swPageAlloc;
 StopWatch swBitAlloc;
+StopWatch swFastTrack;
+StopWatch swSlowTrack;
+
+int repeatLoop = 0;
 
 // Common function implementation for thread local and shared AlignedBlockList
 private mixin template AlignedBlockListImpl(bool isShared)
@@ -42,6 +46,7 @@ private:
     else alias parent = ParentAllocator.instance;
 
     AlignedBlockNode *root;
+    int numNodes;
 
     static if (isShared)
     SpinLock lock = SpinLock(SpinLock.Contention.brief);
@@ -70,6 +75,8 @@ private:
 
         if (tmp == cast(AlignedBlockNode*) root)
             root = cast(typeof(root)) next;
+
+        numNodes--;
     }
 
     private bool insertNewNode()
@@ -92,6 +99,8 @@ private:
         if (localRoot)
             localRoot.prev = newNode;
         root = cast(typeof(root)) newNode;
+
+        numNodes++;
 
         return true;
     }
@@ -144,8 +153,12 @@ public:
         auto tmp = cast(AlignedBlockNode*) root;
 
         // Iterate through list and find first node which has fresh memory available
+        int loopCount = 0;
         while (tmp)
         {
+            loopCount++;
+            if (loopCount == 2)
+                repeatLoop++;
             static if (isShared)
             {
                 tmp.keepAlive++;
@@ -157,6 +170,10 @@ public:
             auto result = tmp.bAlloc.allocate(n);
             static if (timeDbg)
             swBitAlloc.stop();
+
+            static if (timeDbg)
+            swFastTrack.start();
+
             if (result.length == n)
             {
                 static if (isShared)
@@ -176,6 +193,8 @@ public:
                     tmp.keepAlive--;
                     lock.unlock();
                 }
+                static if (timeDbg)
+                swFastTrack.stop();
 
                 return result;
             }
@@ -198,7 +217,7 @@ public:
             }
             else
             {
-                if (tmp.bytesUsed == 0)
+                if (numNodes > 10 && tmp.bytesUsed == 0)
                 {
                     removeNode(tmp);
                     if (!root)
@@ -207,20 +226,30 @@ public:
             }
 
             tmp = tmp.next;
+            static if (timeDbg)
+            swFastTrack.stop();
         }
 
         if (!insertNewNode())
         {
             static if (isShared)
             lock.unlock();
+
+            static if (timeDbg)
+            swFastTrack.stop();
             return null;
         }
+
+
+        static if (timeDbg)
+        swFastTrack.stop();
 
         static if (timeDbg)
         swBitAlloc.start();
         void[] result = (cast(AlignedBlockNode*) root).bAlloc.allocate(n);
         static if (timeDbg)
         swBitAlloc.stop();
+
         static if (isShared)
         {
             atomicOp!"+="(root.bytesUsed, result.length);
@@ -536,6 +565,7 @@ version (unittest)
     }
 }
 
+/*
 void main()
 {
     import std.experimental.allocator.building_blocks.ascending_page_allocator;
@@ -557,61 +587,68 @@ void main()
         }
     }
 
+    alias SharedBitmappedBlock = BitmappedBlock2;
+    alias SharedAscendingPageAllocator = AscendingPageAllocator;
+    alias SharedAlignedBlockList = AlignedBlockList;
     alias SuperAllocator = Segregator!(
+        8,
+        SharedAlignedBlockList!(SharedBitmappedBlock!8, SharedAscendingPageAllocator*, 1 << 12),
+        Segregator!(
+
         16,
-        AlignedBlockList!(BitmappedBlock2!16, AscendingPageAllocator*, 1 << 16),
+        SharedAlignedBlockList!(SharedBitmappedBlock!16, SharedAscendingPageAllocator*, 1 << 12),
         Segregator!(
 
         32,
-        AlignedBlockList!(BitmappedBlock2!32, AscendingPageAllocator*, 1 << 17),
+        SharedAlignedBlockList!(SharedBitmappedBlock!32, SharedAscendingPageAllocator*, 1 << 13),
         Segregator!(
 
         64,
-        AlignedBlockList!(BitmappedBlock2!64, AscendingPageAllocator*, 1 << 18),
+        SharedAlignedBlockList!(SharedBitmappedBlock!64, SharedAscendingPageAllocator*, 1 << 14),
         Segregator!(
 
         128,
-        AlignedBlockList!(BitmappedBlock2!128, AscendingPageAllocator*, 1 << 19),
+        SharedAlignedBlockList!(SharedBitmappedBlock!128, SharedAscendingPageAllocator*, 1 << 15),
         Segregator!(
 
         256,
-        AlignedBlockList!(BitmappedBlock2!256, AscendingPageAllocator*, 1 << 20),
+        SharedAlignedBlockList!(SharedBitmappedBlock!256, SharedAscendingPageAllocator*, 1 << 16),
         Segregator!(
 
         512,
-        AlignedBlockList!(BitmappedBlock2!512, AscendingPageAllocator*, 1 << 21),
+        SharedAlignedBlockList!(SharedBitmappedBlock!512, SharedAscendingPageAllocator*, 1 << 17),
         Segregator!(
 
         1024,
-        AlignedBlockList!(SharedBitmappedBlock!1024, AscendingPageAllocator*, 1 << 22),
+        SharedAlignedBlockList!(SharedBitmappedBlock!1024, SharedAscendingPageAllocator*, 1 << 18),
         Segregator!(
 
         2048,
-        AlignedBlockList!(SharedBitmappedBlock!2048, AscendingPageAllocator*, 1 << 22),
+        SharedAlignedBlockList!(SharedBitmappedBlock!2048, SharedAscendingPageAllocator*, 1 << 19),
         Segregator!(
 
         1 << 12,
-        AlignedBlockList!(SharedBitmappedBlock!(1 << 12), AscendingPageAllocator*, 1 << 22),
+        SharedAlignedBlockList!(SharedBitmappedBlock!(1 << 12), SharedAscendingPageAllocator*, 1 << 20),
         Segregator!(
 
         1 << 13,
-        AlignedBlockList!(SharedBitmappedBlock!(1 << 13), AscendingPageAllocator*, 1 << 22),
+        SharedAlignedBlockList!(SharedBitmappedBlock!(1 << 13), SharedAscendingPageAllocator*, 1 << 21),
         Segregator!(
 
         1 << 14,
-        AlignedBlockList!(SharedBitmappedBlock!(1 << 14), AscendingPageAllocator*, 1 << 22),
+        SharedAlignedBlockList!(SharedBitmappedBlock!(1 << 14), SharedAscendingPageAllocator*, 1 << 22),
         Segregator!(
 
         1 << 15,
-        AlignedBlockList!(SharedBitmappedBlock!(1 << 15), AscendingPageAllocator*, 1 << 22),
-        AscendingPageAllocator*
-        ))))))))))));
+        SharedAlignedBlockList!(SharedBitmappedBlock!(1 << 15), SharedAscendingPageAllocator*, 1 << 23),
+        SharedAscendingPageAllocator*
+        )))))))))))));
 
-    enum myAlloc = 1;
+    enum myAlloc = 0;
     static if (myAlloc)
     {
         SuperAllocator a;
-        auto pageAlloc = AscendingPageAllocator(1UL << 40);
+        auto pageAlloc = SharedAscendingPageAllocator(1UL << 40);
         a.allocatorForSize!(1 << 16) = &pageAlloc;
         a.allocatorForSize!(1 << 15).parent = &pageAlloc;
         a.allocatorForSize!(1 << 14).parent = &pageAlloc;
@@ -625,6 +662,7 @@ void main()
         a.allocatorForSize!64.parent = &pageAlloc;
         a.allocatorForSize!32.parent = &pageAlloc;
         a.allocatorForSize!16.parent = &pageAlloc;
+        a.allocatorForSize!8.parent = &pageAlloc;
     }
     else
     {
@@ -632,12 +670,14 @@ void main()
     }
 
     auto rnd = Random(1000);
-    auto swAlloc = StopWatch(AutoStart.no);
     auto swDirty = StopWatch(AutoStart.no);
     auto swDealloc = StopWatch(AutoStart.no);
     auto swShuffle = StopWatch(AutoStart.no);
     swBitAlloc = StopWatch(AutoStart.no);
     swPageAlloc = StopWatch(AutoStart.no);
+    swFastTrack = StopWatch(AutoStart.no);
+    swFastTrack.reset();
+
     size_t maxIter = 10000;
     enum testNum = 10000;
     void[][testNum] buf;
@@ -647,16 +687,12 @@ void main()
         foreach (j; 0 .. testNum)
         {
             size_t size;
-            auto allocationType = uniform(1, 11, rnd);
-            if (allocationType <= 6) size = uniform(4, 7, rnd);
+            auto allocationType = uniform(7, 10, rnd);
+            if (allocationType <= 6) size = uniform(3, 7, rnd);
             else if (allocationType <= 9) size = uniform(7, 16, rnd);
             else size = 17;
 
-            static if (timeDbg)
-            swAlloc.start();
             buf[j] = a.allocate(1 << size);
-            static if (timeDbg)
-            swAlloc.stop();
 
             assert(buf[j].length == (1 << size));
 
@@ -685,10 +721,13 @@ void main()
 
     static if (timeDbg)
     {
-        writeln("Allocation time totals: ", swAlloc.peek().toString());
+        writeln("FastTrack time totals: ", swFastTrack.peek().toString());
         writeln("Deallocation time totals: ", swDealloc.peek().toString());
         writeln("Dirty time totals: ", swDirty.peek().toString());
         writeln("BitmappedBlock time totals: ", swBitAlloc.peek().toString());
         writeln("AscendingPage time totals: ", swPageAlloc.peek().toString());
     }
+    writeln("Percentage of retries is: ", (cast(double) repeatLoop) / (testNum * maxIter));
+
 }
+*/
