@@ -78,7 +78,14 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
         @property uint blockSize() { return _blockSize; }
         @property void blockSize(uint s)
         {
-            assert(_control.length == 0 && s % alignment == 0);
+            static if (multiBlock)
+            {
+                assert((cast(BitVector) _control).length == 0 && s % alignment == 0);
+            }
+            else
+            {
+                assert(_control.length == 0 && s % alignment == 0);
+            }
             _blockSize = s;
         }
         private uint _blockSize;
@@ -192,14 +199,15 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
 
             static if (multiBlock)
             {
-                _control = BitVector((cast(ulong*) data.ptr)[0 .. controlWords]);
+                _control = cast(typeof(_control)) BitVector((cast(ulong*) data.ptr)[0 .. controlWords]);
+                (cast(BitVector) _control)[] = 0;
             }
             else
             {
-                _control = (cast(shared(ulong*)) data.ptr)[0 .. controlWords];
+                _control = (cast(typeof(_control.ptr)) data.ptr)[0 .. controlWords];
+                _control[] = 0;
             }
 
-            _control[] = 0;
             _payload = cast(typeof(_payload)) payload;
             break;
         }
@@ -243,12 +251,13 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
     {
         static if (multiBlock)
         {
-            void* start = _control.rep.ptr, end = _payload.ptr + _payload.length;
+            void* start = cast(void*) _control.rep.ptr;
         }
         else
         {
-            void* start = _control.ptr, end = _payload.ptr + _payload.length;
+            void* start = cast(void*) _control.ptr;
         }
+        void* end = cast(void*) (_payload.ptr + _payload.length);
         parent.deallocate(start[0 .. end - start]);
     }
 
@@ -264,14 +273,22 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
             while (_startIdx < _control.rep.length
                 && _control.rep[_startIdx] == ulong.max)
             {
-                ++_startIdx;
+                static if (isShared)
+                {
+                    auto localStart = _startIdx + 1;
+                    _startIdx = localStart;
+                }
+                else
+                {
+                    ++_startIdx;
+                }
             }
         }
 
         /*
         Based on the latest allocated bit, 'newBit', it adjusts '_freshBit'
         */
-        void adjustFreshBit(const ulong newBit)
+        private void adjustFreshBit(this _)(const ulong newBit)
         {
             import std.algorithm.comparison : max;
             _freshBit = max(newBit, _freshBit);
@@ -281,13 +298,14 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
         Returns the blocks corresponding to the control bits starting at word index
         wordIdx and bit index msbIdx (MSB=0) for a total of howManyBlocks.
         */
-        private void[] blocksFor(size_t wordIdx, uint msbIdx, size_t howManyBlocks)
+        @trusted
+        private void[] blocksFor(this _)(size_t wordIdx, uint msbIdx, size_t howManyBlocks)
         {
             assert(msbIdx <= 63);
             const start = (wordIdx * 64 + msbIdx) * blockSize;
             const end = start + blockSize * howManyBlocks;
             if (start == end) return null;
-            if (end <= _payload.length) return _payload[start .. end];
+            if (end <= _payload.length) return cast(void[]) _payload[start .. end];
             // This could happen if we have more control bits than available memory.
             // That's possible because the control bits are rounded up to fit in
             // 64-bit words.
@@ -348,7 +366,14 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
                     uint j = leadingOnes(w);
                     assert(j < 64);
                     assert((_control.rep[i] & ((1UL << 63) >> j)) == 0);
-                    _control.rep[i] |= (1UL << 63) >> j;
+                    static if (isShared)
+                    {
+                        *(cast(ulong*) &_control._rep[i]) |= (1UL << 63) >> j;
+                    }
+                    else
+                    {
+                        _control.rep[i] |= (1UL << 63) >> j;
+                    }
                     if (i == _startIdx)
                     {
                         adjustStartIdx();
@@ -382,7 +407,7 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
         space in the `BitmappedBlock`, `allocateFresh` could still return `null`,
         because all the available blocks have been previously deallocated.
         */
-        @safe void[] allocateFresh(const size_t s)
+        @trusted void[] allocateFresh(const size_t s)
         {
             static if (isShared)
             {
@@ -396,8 +421,17 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
                 cast(uint) (_freshBit % 64), blocks);
             if (result)
             {
-                _control[_freshBit .. _freshBit + blocks] = 1;
-                _freshBit += blocks;
+                (cast(BitVector) _control)[_freshBit .. _freshBit + blocks] = 1;
+                static if (isShared)
+                {
+                    ulong localFreshBit = _freshBit;
+                    localFreshBit += blocks;
+                    _freshBit = localFreshBit;
+                }
+                else
+                {
+                    _freshBit += blocks;
+                }
             }
             return result;
         }
@@ -467,14 +501,35 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
             if (msbIdx + blocks <= 64)
             {
                 // Allocation should fit this control word
-                if (setBitsIfZero(_control.rep[wordIdx],
-                        cast(uint) (64 - msbIdx - blocks), 63 - msbIdx))
+                static if (isShared)
+                {
+                    ulong localControl = _control.rep[wordIdx];
+                    bool didSetBit = setBitsIfZero(localControl,
+                        cast(uint) (64 - msbIdx - blocks), 63 - msbIdx);
+                    _control.rep[wordIdx] = localControl;
+                }
+                else
+                {
+                    bool didSetBit = setBitsIfZero(_control.rep[wordIdx],
+                        cast(uint) (64 - msbIdx - blocks), 63 - msbIdx);
+                }
+                if (didSetBit)
                 {
                     tmpResult = blocksFor(wordIdx, msbIdx, blocks);
                     if (!tmpResult)
                     {
-                        resetBits(_control.rep[wordIdx],
-                            cast(uint) (64 - msbIdx - blocks), 63 - msbIdx);
+                        static if (isShared)
+                        {
+                            localControl = _control.rep[wordIdx];
+                            resetBits(localControl,
+                                cast(uint) (64 - msbIdx - blocks), 63 - msbIdx);
+                            _control.rep[wordIdx] = localControl;
+                        }
+                        else
+                        {
+                            resetBits(_control.rep[wordIdx],
+                                cast(uint) (64 - msbIdx - blocks), 63 - msbIdx);
+                        }
                         return tuple(size_t.max - 1, 0u);
                     }
                     result = tmpResult;
@@ -509,7 +564,16 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
                 {
                     return tuple(size_t.max - 1, 0u);
                 }
-                _control.rep[wordIdx] |= mask;
+                static if (isShared)
+                {
+                    ulong localControl = _control.rep[wordIdx];
+                    localControl |= mask;
+                    _control.rep[wordIdx] = localControl;
+                }
+                else
+                {
+                    _control.rep[wordIdx] |= mask;
+                }
                 result = tmpResult;
                 tmpResult = null;
                 return tuple(size_t.max, 0u);
@@ -524,7 +588,16 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
         {
             assert(wordIdx < _control.rep.length);
             const available = trailingZeros(_control.rep[wordIdx]);
-            _control.rep[wordIdx] |= ulong.max >> available;
+            static if (isShared)
+            {
+                ulong localControl = _control.rep[wordIdx];
+                localControl |= ulong.max >> available;
+                _control.rep[wordIdx] = localControl;
+            }
+            else
+            {
+                _control.rep[wordIdx] |= ulong.max >> available;
+            }
             return available;
         }
 
@@ -543,7 +616,18 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
                     // yay, found stuff
                     result = blocksFor(i, j, blocks);
                     if (result)
-                        setBits(_control.rep[i], 64 - j - blocks, 63 - j);
+                    {
+                        static if (isShared)
+                        {
+                            ulong localControl = _control.rep[i];
+                            setBits(localControl, 64 - j - blocks, 63 - j);
+                            _control.rep[i] = localControl;
+                        }
+                        else
+                        {
+                            setBits(_control.rep[i], 64 - j - blocks, 63 - j);
+                        }
+                    }
                     return result;
                 }
                 // Next, try allocations that cross a word
@@ -556,7 +640,16 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
                 result = blocksFor(i, 64 - available, blocks);
                 if (result && allocateAtFront(i + 1, needed))
                 {
-                    _control.rep[i] |= (1UL << available) - 1;
+                    static if (isShared)
+                    {
+                        ulong localControl = _control.rep[i];
+                        localControl |= (1UL << available) - 1;
+                        _control.rep[i] = localControl;
+                    }
+                    else
+                    {
+                        _control.rep[i] |= (1UL << available) - 1;
+                    }
                     return result;
                 }
             }
@@ -568,15 +661,22 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
             assert(blocks > 64);
             if (_startIdx == _control._rep.length)
             {
-                assert(_control.allAre1);
+                static if (isShared)
+                {
+                    assert((cast(BitVector) _control).allAre1);
+                }
+                else
+                {
+                    assert(_control.allAre1);
+                }
                 return null;
             }
 
-            auto i = _control.findZeros(blocks, _startIdx * 64);
+            auto i = (cast(BitVector)_control).findZeros(blocks, _startIdx * 64);
             if (i == i.max) return null;
             // Allocate those bits
-            _control[i .. i + blocks] = 1;
-            return _payload[cast(size_t) (i * blockSize)
+            (cast(BitVector) _control)[i .. i + blocks] = 1;
+            return cast(void[]) _payload[cast(size_t) (i * blockSize)
                 .. cast(size_t) ((i + blocks) * blockSize)];
         }
 
@@ -594,7 +694,15 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
             const mask = (1UL << (64 - blocks)) - 1;
             if (_control.rep[wordIdx] > mask) return false;
             // yay, works
-            _control.rep[wordIdx] |= ~mask;
+            static if (isShared)
+            {
+                ulong localControl = _control.rep[wordIdx];
+                localControl |= ~mask;
+            }
+            else
+            {
+                _control.rep[wordIdx] |= ~mask;
+            }
             return true;
         }
 
@@ -739,7 +847,7 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
 
             if (newSize == 0)
             {
-                deallocate(b);
+                deallocateImpl(b);
                 b = null;
                 return true;
             }
@@ -772,8 +880,8 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
             immutable blockIdx = pos / blockSize;
 
             // Adjust pointer, might be inside a block due to alignedAllocate
-            auto begin = _payload.ptr + blockIdx * blockSize,
-                end = b.ptr + b.length;
+            void *begin = cast(void*) (_payload.ptr + blockIdx * blockSize),
+                end = cast(void*) (b.ptr + b.length);
             b = begin[0 .. end - begin];
             // Round up size to multiple of block size
             auto blocks = b.length.divideRoundUp(blockSize);
@@ -787,14 +895,34 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
             {
                 if (blocks + msbIdx <= 64)
                 {
-                    resetBits(_control.rep[wordIdx],
-                        cast(uint) (64 - msbIdx - blocks),
-                        63 - msbIdx);
+                    static if (isShared)
+                    {
+                        ulong localControl = _control.rep[wordIdx];
+                        resetBits(localControl,
+                            cast(uint) (64 - msbIdx - blocks),
+                            63 - msbIdx);
+                        _control.rep[wordIdx] = localControl;
+                    }
+                    else
+                    {
+                        resetBits(_control.rep[wordIdx],
+                            cast(uint) (64 - msbIdx - blocks),
+                            63 - msbIdx);
+                    }
                     return true;
                 }
                 else
                 {
-                    _control.rep[wordIdx] &= ulong.max << 64 - msbIdx;
+                    static if (isShared)
+                    {
+                        ulong localControl = _control.rep[wordIdx];
+                        localControl &= ulong.max << (64 - msbIdx);
+                        _control.rep[wordIdx] = localControl;
+                    }
+                    else
+                    {
+                        _control.rep[wordIdx] &= ulong.max << (64 - msbIdx);
+                    }
                     blocks -= 64 - msbIdx;
                     ++wordIdx;
                     msbIdx = 0;
@@ -811,7 +939,16 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
             assert(wordIdx <= _control.rep.length);
             if (blocks)
             {
-                _control.rep[wordIdx] &= ulong.max >> blocks;
+                static if (isShared)
+                {
+                    ulong localControl = _control.rep[wordIdx];
+                    localControl &= ulong.max >> blocks;
+                    _control.rep[wordIdx] = localControl;
+                }
+                else
+                {
+                    _control.rep[wordIdx] &= ulong.max >> blocks;
+                }
             }
             return true;
         }
@@ -830,7 +967,7 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
                 scope(exit) lock.unlock();
             }
 
-            _control[] = 0;
+            (cast(BitVector) _control)[] = 0;
             _startIdx = 0;
             return true;
         }
@@ -852,28 +989,30 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
             return emptyImpl();
         }
 
-        pure nothrow @safe @nogc
+        pure nothrow @trusted @nogc
         private Ternary emptyImpl()
         {
-            return Ternary(_control.allAre0());
+            return Ternary((cast(BitVector) _control).allAre0());
         }
 
         void dump()
         {
             import std.stdio : writefln, writeln;
-            writefln("%s @ %s {", typeid(this), cast(void*) _control._rep.ptr);
+
+            ulong controlLen = (cast(BitVector) _control).length;
+            writefln("%s @ %s {", typeid(this), cast(void*) (cast(BitVector) _control)._rep.ptr);
             scope(exit) writeln("}");
             assert(_payload.length >= blockSize * _blocks);
-            assert(_control.length >= _blocks);
+            assert(controlLen >= _blocks);
             writefln("  _startIdx=%s; blockSize=%s; blocks=%s",
                 _startIdx, blockSize, _blocks);
-            if (!_control.length) return;
+            if (!controlLen) return;
             uint blockCount = 1;
-            bool inAllocatedStore = _control[0];
-            void* start = _payload.ptr;
+            bool inAllocatedStore = (cast(BitVector) _control)[0];
+            void* start = cast(void*) _payload.ptr;
             for (size_t i = 1;; ++i)
             {
-                if (i >= _blocks || _control[i] != inAllocatedStore)
+                if (i >= _blocks || (cast(BitVector) _control)[i] != inAllocatedStore)
                 {
                     writefln("  %s block at 0x%s, length: %s (%s*%s)",
                         inAllocatedStore ? "Busy" : "Free",
@@ -881,9 +1020,9 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
                         blockCount * blockSize,
                         blockCount, blockSize);
                     if (i >= _blocks) break;
-                    assert(i < _control.length);
-                    inAllocatedStore = _control[i];
-                    start = _payload.ptr + blockCount * blockSize;
+                    assert(i < controlLen);
+                    inAllocatedStore = (cast(BitVector) _control)[i];
+                    start = cast(void*) (_payload.ptr + blockCount * blockSize);
                     blockCount = 1;
                 }
                 else
@@ -907,8 +1046,8 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
             }
 
             if (emptyImpl != Ternary.yes) return null;
-            _control[] = 1;
-            return _payload;
+            (cast(BitVector) _control)[] = 1;
+            return cast(void[]) _payload;
         }
     }
     // Single block implementation
@@ -1133,7 +1272,7 @@ struct BitmappedBlock(size_t theBlockSize, uint theAlignment = platformAlignment
     mixin BitmappedBlockImpl!(false, f == Yes.multiblock);
 }
 
-struct SharedBitmappedBlock(size_t theBlockSize, uint theAlignment = platformAlignment,
+shared struct SharedBitmappedBlock(size_t theBlockSize, uint theAlignment = platformAlignment,
    ParentAllocator = NullAllocator, Flag!"multiblock" f = Yes.multiblock)
 {
     version(StdUnittest)
@@ -1146,12 +1285,11 @@ struct SharedBitmappedBlock(size_t theBlockSize, uint theAlignment = platformAli
         scope(exit) () nothrow @nogc { AlignedMallocator.instance.deallocate(m); }();
         static if (theBlockSize == chooseAtRuntime)
         {
-            testAllocator!(() => SharedBitmappedBlock(m, 64));
+            testAllocator!(() => SharedBitmappedBlock!(theBlockSize, theAlignment, NullAllocator)(m, 64));
         }
-
         else
         {
-            testAllocator!(() => SharedBitmappedBlock(m));
+            testAllocator!(() => SharedBitmappedBlock!(theBlockSize, theAlignment, NullAllocator)(m));
         }
     }
     mixin BitmappedBlockImpl!(true, f == Yes.multiblock);
@@ -1169,6 +1307,57 @@ struct SharedBitmappedBlock(size_t theBlockSize, uint theAlignment = platformAli
     static assert(hasMember!(InSituRegion!(10_240, 64), "allocateAll"));
     const b = a.allocate(100);
     assert(b.length == 100);
+}
+
+@system unittest
+{
+    import std.experimental.allocator.mallocator : Mallocator;
+
+    static void testAlloc(Allocator)(ref Allocator a)
+    {
+        import core.thread : ThreadGroup;
+        import std.algorithm.sorting : sort;
+        import core.internal.spinlock : SpinLock;
+
+        SpinLock lock = SpinLock(SpinLock.Contention.brief);
+        enum numThreads = 100;
+        void[][numThreads] buf;
+        size_t count = 0;
+
+        void fun()
+        {
+            void[] b = a.allocate(63);
+            assert(b.length == 63);
+
+            lock.lock();
+            buf[count] = b;
+            count++;
+            lock.unlock();
+        }
+
+        auto tg = new ThreadGroup;
+        foreach (i; 0 .. numThreads)
+        {
+            tg.create(&fun);
+        }
+        tg.joinAll();
+
+        sort!((a, b) => a.ptr < b.ptr)(buf[0 .. numThreads]);
+        foreach (i; 0 .. numThreads - 1)
+        {
+            assert(buf[i].ptr + a.goodAllocSize(buf[i].length) <= buf[i + 1].ptr);
+        }
+
+        foreach (i; 0 .. numThreads)
+        {
+            assert(a.deallocate(buf[i]));
+        }
+    }
+
+    auto alloc1 = SharedBitmappedBlock!(64, platformAlignment, Mallocator, Yes.multiblock)(1024 * 1024);
+    auto alloc2 = SharedBitmappedBlock!(64, platformAlignment, Mallocator, No.multiblock)(1024 * 1024);
+    testAlloc(alloc1);
+    testAlloc(alloc2);
 }
 
 @system unittest
@@ -1207,13 +1396,15 @@ struct SharedBitmappedBlock(size_t theBlockSize, uint theAlignment = platformAli
     // Test chooseAtRuntime
     import std.experimental.allocator.gc_allocator : GCAllocator;
     uint blockSize = 64;
-    testAllocator!(() => BitmappedBlock!(chooseAtRuntime, 8, GCAllocator)(1024 * 64, blockSize));
+    testAllocator!(() => BitmappedBlock!(chooseAtRuntime, 8, GCAllocator, Yes.multiblock)(1024 * 64, blockSize));
+    testAllocator!(() => BitmappedBlock!(chooseAtRuntime, 8, GCAllocator, No.multiblock)(1024 * 64, blockSize));
 }
 
 @system unittest
 {
     import std.experimental.allocator.mallocator : Mallocator;
-    testAllocator!(() => SharedBitmappedBlock!(64, 8, Mallocator)(1024 * 64));
+    testAllocator!(() => SharedBitmappedBlock!(64, 8, Mallocator, Yes.multiblock)(1024 * 64));
+    testAllocator!(() => SharedBitmappedBlock!(64, 8, Mallocator, No.multiblock)(1024 * 64));
 }
 
 @system unittest
@@ -1221,7 +1412,8 @@ struct SharedBitmappedBlock(size_t theBlockSize, uint theAlignment = platformAli
     // Test chooseAtRuntime
     import std.experimental.allocator.mallocator : Mallocator;
     uint blockSize = 64;
-    testAllocator!(() => SharedBitmappedBlock!(chooseAtRuntime, 8, Mallocator)(1024 * 64, blockSize));
+    testAllocator!(() => SharedBitmappedBlock!(chooseAtRuntime, 8, Mallocator, Yes.multiblock)(1024 * 64, blockSize));
+    testAllocator!(() => SharedBitmappedBlock!(chooseAtRuntime, 8, Mallocator, No.multiblock)(1024 * 64, blockSize));
 }
 
 @system unittest
@@ -1894,7 +2086,7 @@ private struct BitVector
 {
     ulong[] _rep;
 
-    auto rep() { return _rep; }
+    auto rep(this _)() { return _rep; }
 
     pure nothrow @safe @nogc
     this(ulong[] data) { _rep = data; }

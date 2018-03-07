@@ -68,6 +68,9 @@ private:
 
     private void removeNode(AlignedBlockNode* tmp)
     {
+        static if (isShared)
+        import core.atomic : atomicOp;
+
         auto next = tmp.next;
         if (tmp.prev) tmp.prev.next = tmp.next;
         if (tmp.next) tmp.next.prev = tmp.prev;
@@ -76,11 +79,21 @@ private:
         if (tmp == cast(AlignedBlockNode*) root)
             root = cast(typeof(root)) next;
 
-        numNodes--;
+        static if (isShared)
+        {
+            atomicOp!"-="(numNodes, 1);
+        }
+        else
+        {
+            numNodes--;
+        }
     }
 
     private bool insertNewNode()
     {
+        static if (isShared)
+        import core.atomic : atomicOp;
+
         void[] buf = parent.alignedAllocate(alignment, alignment);
         if (buf is null)
             return false;
@@ -100,7 +113,14 @@ private:
             localRoot.prev = newNode;
         root = cast(typeof(root)) newNode;
 
-        numNodes++;
+        static if (isShared)
+        {
+            atomicOp!"+="(numNodes, 1);
+        }
+        else
+        {
+            numNodes++;
+        }
 
         return true;
     }
@@ -208,7 +228,9 @@ public:
             // This node has no fresh memory available doesn't hold alive objects, remove it
             static if (isShared)
             {
-                if (atomicLoad(tmp.bytesUsed) == 0 && tmp.keepAlive == 0)
+                if (atomicLoad(numNodes) > 10 &&
+                    atomicLoad(tmp.bytesUsed) == 0 &&
+                    tmp.keepAlive == 0)
                 {
                     removeNode(tmp);
                     if (!root)

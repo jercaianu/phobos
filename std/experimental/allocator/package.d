@@ -1014,6 +1014,54 @@ nothrow @system @nogc
     //...
 }
 
+struct TypeAllocator(T)
+{
+    import std.experimental.allocator.building_blocks.aligned_block_list;
+    import std.experimental.allocator.building_blocks.bitmapped_block;
+    import std.experimental.allocator.building_blocks.ascending_page_allocator;
+
+    enum blockSize = roundUpToPowerOf2(stateSize!T);
+    enum maxBlock = (1 << 15);
+
+    static if (blockSize > maxBlock)
+    {
+        static assert(0, "Not implemented for large objects");
+    }
+
+    alias GlobalObjectAllocator = SharedAlignedBlockList!(
+        SharedBitmappedBlock!(blockSize, platformAlignment, NullAllocator, No.multiblock),
+        SharedAscendingPageAllocator*,
+        blockSize * 1024);
+
+    alias GlobalArrayAllocator = SharedAlignedBlockList!(
+        SharedBitmappedBlock!(blockSize, platformAlignment, NullAllocator, Yes.multiblock),
+        SharedAscendingPageAllocator*,
+        blockSize * 1024);
+
+    alias LocalObjectAllocator = AlignedBlockList!(
+        BitmappedBlock!(blockSize, platformAlignment, NullAllocator, No.multiblock),
+        SharedAscendingPageAllocator*,
+        blockSize * 1024);
+
+    alias LocalArrayAllocator = AlignedBlockList!(
+        BitmappedBlock!(blockSize, platformAlignment, NullAllocator, Yes.multiblock),
+        SharedAscendingPageAllocator*,
+        blockSize * 1024);
+
+    GlobalObjectAllocator
+}
+
+void getTAllocator(T)()
+{
+    static TypeAllocator!T a;
+}
+
+
+shared struct SuperAllocator
+{
+
+}
+
 /**
 Gets/sets the allocator for the current process. This allocator must be used
 for allocating memory shared across threads. Objects created using this
