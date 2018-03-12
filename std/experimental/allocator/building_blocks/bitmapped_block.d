@@ -218,7 +218,6 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
 
         _blocks = cast(typeof(_blocks)) localBlocks;
         //writeln(4);
-
     }
 
     /// Ditto
@@ -681,7 +680,7 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
             }
 
             auto i = (cast(BitVector)_control).findZeros(blocks, _startIdx * 64);
-            if (i == i.max) return null;
+            if (i == i.max || i + blocks > _blocks) return null;
             // Allocate those bits
             (cast(BitVector) _control)[i .. i + blocks] = 1;
             return cast(void[]) _payload[cast(size_t) (i * blockSize)
@@ -1163,7 +1162,7 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
                     4, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 6, 6, 7
                 ];
 
-                _startIdx++;
+                _startIdx = (_startIdx + 1) % _control.length;
                 for (size_t idx = _startIdx; idx < _startIdx + _control.length; idx++)
                 {
                     size_t i = idx % _control.length;
@@ -1210,6 +1209,7 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
             if (b is null)
                 return true;
 
+            import std.stdio;
             auto blockIndex = (b.ptr - _payload.ptr) / blockSize;
             auto controlIndex = blockIndex / 64;
             auto bitIndex = blockIndex % 64;

@@ -1088,7 +1088,7 @@ struct TypeAllocator(T)
     alias LocalObjectAllocator = AlignedBlockList!(
         BitmappedBlock!(blockSize, platformAlignment, NullAllocator, No.multiblock),
         SharedAscendingPageAllocator*,
-        blockSize * 1024);
+        roundUpToPowerOf2(blockSize * 1024));
 
     alias LocalArrayAllocator = Segregator!(
         8,
@@ -1100,47 +1100,47 @@ struct TypeAllocator(T)
         Segregator!(
 
         32,
-        AlignedBlockList!(BitmappedBlock!(32, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 13),
+        AlignedBlockList!(BitmappedBlock!(32, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 12),
         Segregator!(
 
         64,
-        AlignedBlockList!(BitmappedBlock!(64, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 14),
+        AlignedBlockList!(BitmappedBlock!(64, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 13),
         Segregator!(
 
         128,
-        AlignedBlockList!(BitmappedBlock!(128, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 15),
+        AlignedBlockList!(BitmappedBlock!(128, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 14),
         Segregator!(
 
         256,
-        AlignedBlockList!(BitmappedBlock!(256, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 16),
+        AlignedBlockList!(BitmappedBlock!(256, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 15),
         Segregator!(
 
         512,
-        AlignedBlockList!(BitmappedBlock!(512, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 17),
+        AlignedBlockList!(BitmappedBlock!(512, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 16),
         Segregator!(
 
         1024,
-        AlignedBlockList!(BitmappedBlock!(1024, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 18),
+        AlignedBlockList!(BitmappedBlock!(1024, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 17),
         Segregator!(
 
         2048,
-        AlignedBlockList!(BitmappedBlock!(2048, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 19),
+        AlignedBlockList!(BitmappedBlock!(2048, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 18),
         Segregator!(
 
         1 << 12,
-        AlignedBlockList!(BitmappedBlock!(1 << 12, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 20),
+        AlignedBlockList!(BitmappedBlock!(1 << 12, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 19),
         Segregator!(
 
         1 << 13,
-        AlignedBlockList!(BitmappedBlock!(1 << 13, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 21),
+        AlignedBlockList!(BitmappedBlock!(1 << 13, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 20),
         Segregator!(
 
         1 << 14,
-        AlignedBlockList!(BitmappedBlock!(1 << 14, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 22),
+        AlignedBlockList!(BitmappedBlock!(1 << 14, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 21),
         Segregator!(
 
         1 << 15,
-        AlignedBlockList!(BitmappedBlock!(1 << 15, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 23),
+        AlignedBlockList!(BitmappedBlock!(1 << 15, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 21),
         SharedAscendingPageAllocator*
         )))))))))))));
 
@@ -1178,7 +1178,10 @@ struct TypeAllocator(T)
     bool deallocate(void[] b)
     {
         if (b.length == stateSize!T)
+        {
+            import std.stdio;
             return loa.deallocate(b);
+        }
         return laa.deallocate(b);
     }
 }
@@ -1218,6 +1221,7 @@ void main()
     import std.experimental.allocator.building_blocks.bitmapped_block;
     import std.experimental.allocator.building_blocks.region;
     import std.experimental.allocator.building_blocks.ascending_page_allocator;
+    import std.experimental.allocator.mallocator;
     import std.random;
     import std.algorithm.sorting : sort;
     import core.thread : ThreadGroup;
@@ -1225,35 +1229,68 @@ void main()
 
     enum pageSize = 4096;
     enum numThreads = 2;
-    enum maxIter = 20;
-    enum totalAllocs = maxIter * numThreads;
+    enum maxIter = 5000;
+    enum numAllocs = 5000;
     size_t count = 0;
     SpinLock lock = SpinLock(SpinLock.Contention.brief);
 
-    void[][totalAllocs] buf;
+    enum totalAllocs = maxIter * numAllocs;
 
-    alias MiniAlloc = AlignedBlockList!(
-        BitmappedBlock!(16, platformAlignment, NullAllocator, No.multiblock),
-        SharedAscendingPageAllocator*,
-        8 * 1024);
+    enum smallTest = 0;
+    enum largeTest = 1;
 
-    MiniAlloc[numThreads] ma;
-    for (int i = 0; i < numThreads; i++)
-        ma[i].parent = &rootAllocator;
+    struct MediumStruct
+    {
+        int[100] arr;
+    }
+
+    alias T = MediumStruct;
 
     void fun()
     {
-        //ThreadLocalAllocator tla;
+        ThreadLocalAllocator tla;
+        //alias tla = Mallocator.instance;
         ulong id;
         lock.lock();
         id = count++;
         lock.unlock;
-        auto v = ma[id].allocate(16);
-        //ulong *x = tla.make!ulong;
-        //*x = id;
-        //writeln(*x);
+        auto rnd = Random(1000);
+        T[][numAllocs] largeAllocs;
+        T*[numAllocs] smallAllocs;
 
-        //tla.dispose(x);
+        static if (smallTest)
+        {
+            for (int i = 0; i < maxIter; i++)
+            {
+                for (int j = 0; j < numAllocs; j++)
+                {
+                    smallAllocs[j] = tla.make!T;
+                    *smallAllocs[j] = T.init;
+                }
+
+                for (int j = 0; j < numAllocs; j++)
+                {
+                    tla.dispose(smallAllocs[j]);
+                }
+            }
+        }
+
+        static if (largeTest)
+        {
+            for (int i = 0; i < maxIter; i++)
+            {
+                int arrSize = uniform(10, 20, rnd);
+                for (int j = 0; j < numAllocs; j++)
+                {
+                    largeAllocs[j] = tla.makeArray!T(arrSize);
+                    for (int k = 0; k < largeAllocs[j].length; k++)
+                        largeAllocs[j][k] = T.init;
+                }
+
+                for (int j = 0; j < numAllocs; j++)
+                    tla.dispose(largeAllocs[j]);
+            }
+        }
     }
     auto tg = new ThreadGroup;
     foreach (i; 0 .. numThreads)

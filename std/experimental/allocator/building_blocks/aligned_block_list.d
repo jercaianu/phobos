@@ -93,16 +93,18 @@ private:
 
         import std.stdio;
         void[] buf = parent.alignedAllocate(alignment, alignment);
-        //writeln("here");
         if (buf is null)
+        {
+            import std.stdio;
+            writeln("bad alignment");
             return false;
+        }
 
         auto localRoot = cast(AlignedBlockNode*) root;
         auto newNode = cast(AlignedBlockNode*) buf;
         static if (timeDbg)
         swPageAlloc.start();
         ubyte[] payload = ((cast(ubyte*) buf[AlignedBlockNode.sizeof .. $])[0 .. buf.length - AlignedBlockNode.sizeof]);
-        payload[0] = 1;
         //writeln("here bro");
         newNode.bAlloc = Allocator(payload);
         static if (timeDbg)
@@ -142,6 +144,9 @@ public:
         static if (isShared)
         import core.atomic : atomicOp;
 
+        if (b is null)
+            return true;
+
         enum ulong mask = ~(alignment - 1);
         // Round buffer to nearest `alignment` multiple
         ulong ptr = ((cast(ulong) b.ptr) & mask);
@@ -179,6 +184,7 @@ public:
         int loopCount = 0;
         while (tmp)
         {
+            auto next = tmp.next;
             loopCount++;
             if (loopCount == 2)
                 repeatLoop++;
@@ -250,7 +256,7 @@ public:
                 }
             }
 
-            tmp = tmp.next;
+            tmp = next;
             static if (timeDbg)
             swFastTrack.stop();
         }
@@ -264,7 +270,6 @@ public:
             swFastTrack.stop();
             return null;
         }
-
 
         static if (timeDbg)
         swFastTrack.stop();
