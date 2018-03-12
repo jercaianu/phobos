@@ -84,11 +84,6 @@ import std.typecons; // : tuple, Tuple;
 
 // bringToFront
 /**
-The `bringToFront` function has considerable flexibility and
-usefulness. It can rotate elements in one buffer left or right, swap
-buffers of equal length, and even move elements across disjoint
-buffers of different types and different lengths.
-
 `bringToFront` takes two ranges `front` and `back`, which may
 be of different types. Considering the concatenation of `front` and
 `back` one unified range, `bringToFront` rotates that unified
@@ -104,6 +99,10 @@ in ranges, not as a string function.
 Performs $(BIGOH max(front.length, back.length)) evaluations of $(D
 swap).
 
+The `bringToFront` function can rotate elements in one buffer left or right, swap
+buffers of equal length, and even move elements across disjoint
+buffers of different types and different lengths.
+
 Preconditions:
 
 Either `front` and `back` are disjoint, or `back` is
@@ -118,7 +117,7 @@ Returns:
     The number of elements brought to the front, i.e., the length of `back`.
 
 See_Also:
-    $(HTTP sgi.com/tech/stl/_rotate.html, STL's rotate)
+    $(LINK2 http://en.cppreference.com/w/cpp/algorithm/rotate, STL's `rotate`)
 */
 size_t bringToFront(InputRange, ForwardRange)(InputRange front, ForwardRange back)
 if (isInputRange!InputRange && isForwardRange!ForwardRange)
@@ -472,7 +471,7 @@ use $(LREF filter):
 
 /**
 $(REF retro, std,range) can be used to achieve behavior similar to
-$(HTTP sgi.com/tech/stl/copy_backward.html, STL's copy_backward'):
+$(LINK2 http://en.cppreference.com/w/cpp/algorithm/copy_backward, STL's `copy_backward`'):
 */
 @safe unittest
 {

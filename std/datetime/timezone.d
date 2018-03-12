@@ -22,7 +22,7 @@ $(TR $(TD Utilities) $(TD
 )
 
     License:   $(HTTP www.boost.org/LICENSE_1_0.txt, Boost License 1.0).
-    Authors:   Jonathan M Davis
+    Authors:   $(HTTP jmdavisprog.com, Jonathan M Davis)
     Source:    $(PHOBOSSRC std/datetime/_timezone.d)
 +/
 module std.datetime.timezone;
@@ -53,7 +53,7 @@ else version(Posix)
     import core.sys.posix.sys.types : time_t;
 }
 
-version(StdUnittest) import std.exception : assertThrown;
+version(unittest) import std.exception : assertThrown;
 
 
 /++
@@ -546,10 +546,10 @@ public:
     deprecated @safe unittest
     {
         import std.exception : assertNotThrown;
-        import std.stdio : writefln;
+        import std.stdio : writeln;
         static void testPZSuccess(string tzName)
         {
-            scope(failure) writefln("TZName which threw: %s", tzName);
+            scope(failure) writeln("TZName which threw: ", tzName);
             TimeZone.getTimeZone(tzName);
         }
 
@@ -1460,16 +1460,32 @@ package:
       +/
     static string toISOString(Duration utcOffset) @safe pure
     {
+        import std.array : appender;
+        auto w = appender!string();
+        w.reserve(5);
+        toISOString(w, utcOffset);
+        return w.data;
+    }
+
+    // ditto
+    static void toISOString(W)(ref W writer, Duration utcOffset)
+    if (isOutputRange!(W, char))
+    {
         import std.datetime.date : DateTimeException;
         import std.exception : enforce;
-        import std.format : format;
+        import std.format : formattedWrite;
         immutable absOffset = abs(utcOffset);
         enforce!DateTimeException(absOffset < dur!"minutes"(1440),
                                   "Offset from UTC must be within range (-24:00 - 24:00).");
         int hours;
         int minutes;
         absOffset.split!("hours", "minutes")(hours, minutes);
-        return format(utcOffset < Duration.zero ? "-%02d%02d" : "+%02d%02d", hours, minutes);
+        formattedWrite(
+            writer,
+            utcOffset < Duration.zero ? "-%02d%02d" : "+%02d%02d",
+            hours,
+            minutes
+        );
     }
 
     @safe unittest
@@ -1515,8 +1531,18 @@ package:
       +/
     static string toISOExtString(Duration utcOffset) @safe pure
     {
+        import std.array : appender;
+        auto w = appender!string();
+        w.reserve(6);
+        toISOExtString(w, utcOffset);
+        return w.data;
+    }
+
+    // ditto
+    static void toISOExtString(W)(ref W writer, Duration utcOffset)
+    {
         import std.datetime.date : DateTimeException;
-        import std.format : format;
+        import std.format : formattedWrite;
         import std.exception : enforce;
 
         immutable absOffset = abs(utcOffset);
@@ -1525,7 +1551,12 @@ package:
         int hours;
         int minutes;
         absOffset.split!("hours", "minutes")(hours, minutes);
-        return format(utcOffset < Duration.zero ? "-%02d:%02d" : "+%02d:%02d", hours, minutes);
+        formattedWrite(
+            writer,
+            utcOffset < Duration.zero ? "-%02d:%02d" : "+%02d:%02d",
+            hours,
+            minutes
+        );
     }
 
     @safe unittest
@@ -2471,6 +2502,7 @@ public:
         }
         else
         {
+            import std.path : baseName;
             foreach (DirEntry de; dirEntries(tzDatabaseDir, SpanMode.depth))
             {
                 if (de.isFile)
@@ -2479,7 +2511,7 @@ public:
 
                     if (!tzName.extension().empty ||
                         !tzName.startsWith(subName) ||
-                        tzName == "leapseconds" ||
+                        baseName(tzName) == "leapseconds" ||
                         tzName == "+VERSION")
                     {
                         continue;

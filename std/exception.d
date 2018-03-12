@@ -33,42 +33,81 @@ $(TR $(TD Other) $(TD
 ))
 )
 
-    Synopsis of some of std.exception's functions:
-    --------------------
-    string synopsis()
-    {
-        FILE* f = enforce(fopen("some/file"));
-        // f is not null from here on
-        FILE* g = enforce!WriteException(fopen("some/other/file", "w"));
-        // g is not null from here on
-
-        Exception e = collectException(write(g, readln(f)));
-        if (e)
-        {
-            ... an exception occurred...
-            ... We have the exception to play around with...
-        }
-
-        string msg = collectExceptionMsg(write(g, readln(f)));
-        if (msg)
-        {
-            ... an exception occurred...
-            ... We have the message from the exception but not the exception...
-        }
-
-        char[] line;
-        enforce(readln(f, line));
-        return assumeUnique(line);
-    }
-    --------------------
-
     Copyright: Copyright Andrei Alexandrescu 2008-, Jonathan M Davis 2011-.
     License:   $(HTTP boost.org/LICENSE_1_0.txt, Boost License 1.0)
-    Authors:   $(HTTP erdani.org, Andrei Alexandrescu) and Jonathan M Davis
+    Authors:   $(HTTP erdani.org, Andrei Alexandrescu) and
+               $(HTTP jmdavisprog.com, Jonathan M Davis)
     Source:    $(PHOBOSSRC std/_exception.d)
 
  +/
 module std.exception;
+
+/// Synopis
+@system unittest
+{
+    import core.stdc.stdlib : malloc, free;
+    import std.algorithm.comparison : equal;
+    import std.algorithm.iteration : map, splitter;
+    import std.algorithm.searching : endsWith;
+    import std.conv : ConvException, to;
+    import std.range : front, retro;
+
+    // use enforce like assert
+    int a = 3;
+    enforce(a > 2, "a needs to be higher than 2.");
+
+    // enforce can throw a custom exception
+    enforce!ConvException(a > 2, "a needs to be higher than 2.");
+
+    // enforce will return it's input
+    enum size = 42;
+    auto memory = enforce(malloc(size), "malloc failed")[0 .. size];
+    scope(exit) free(memory.ptr);
+
+    // collectException can be used to test for exceptions
+    Exception e = collectException("abc".to!int);
+    assert(e.file.endsWith("conv.d"));
+
+    // and just for the exception message
+    string msg = collectExceptionMsg("abc".to!int);
+    assert(msg == "Unexpected 'a' when converting from type string to type int");
+
+    // assertThrown can be used to assert that an exception is thrown
+    assertThrown!ConvException("abc".to!int);
+
+    // ifThrown can be used to provide a default value if an exception is thrown
+    assert("x".to!int().ifThrown(0) == 0);
+
+    // handle is a more advanced version of ifThrown for ranges
+    auto r = "12,1337z32,54".splitter(',').map!(a => to!int(a));
+    auto h = r.handle!(ConvException, RangePrimitive.front, (e, r) => 0);
+    assert(h.equal([12, 0, 54]));
+    assertThrown!ConvException(h.retro.equal([54, 0, 12]));
+
+    // basicExceptionCtors avoids the boilerplate when creating custom exceptions
+    static class MeaCulpa : Exception
+    {
+        mixin basicExceptionCtors;
+    }
+    e = collectException((){throw new MeaCulpa("diagnostic message");}());
+    assert(e.msg == "diagnostic message");
+    assert(e.file == __FILE__);
+    assert(e.line == __LINE__ - 3);
+
+    // assumeWontThrow can be used to cast throwing code into `nothrow`
+    void exceptionFreeCode() nothrow
+    {
+        // auto-decoding only throws if an invalid UTF char is given
+        assumeWontThrow("abc".front);
+    }
+
+    // assumeUnique can be used to cast mutable instance to an `immutable` one
+    // use with care
+    char[] str = "  mutable".dup;
+    str[0 .. 2] = "im";
+    immutable res = assumeUnique(str);
+    assert(res == "immutable");
+}
 
 import std.range.primitives;
 import std.traits;
@@ -388,7 +427,7 @@ void assertThrown(T : Throwable = Exception, E)
 template enforce(E : Throwable = Exception)
 if (is(typeof(new E("", __FILE__, __LINE__)) : Throwable) || is(typeof(new E(__FILE__, __LINE__)) : Throwable))
 {
-
+    ///
     T enforce(T)(T value, lazy const(char)[] msg = null,
     string file = __FILE__, size_t line = __LINE__)
     if (is(typeof({ if (!value) {} })))
@@ -1498,10 +1537,13 @@ private bool isUnionAliasedImpl(T)(size_t offset)
         static assert( isUnionAliased!(S.A5, 1)); //a5.b1;
 }
 
+version (CRuntime_Glibc) version = GNU_STRERROR;
+version (CRuntime_UClibc) version = GNU_STRERROR;
+
 package string errnoString(int errno) nothrow @trusted
 {
     import core.stdc.string : strlen;
-    version (CRuntime_Glibc)
+    version (GNU_STRERROR)
     {
         import core.stdc.string : strerror_r;
         char[1024] buf = void;
@@ -1771,7 +1813,7 @@ CommonType!(T1, T2) ifThrown(T1, T2)(lazy scope T1 expression, scope T2 delegate
     static assert(!__traits(compiles, (new Object()).ifThrown(e=>1)));
 }
 
-version(StdUnittest) package
+version(unittest) package
 @property void assertCTFEable(alias dg)()
 {
     static assert({ cast(void) dg(); return true; }());

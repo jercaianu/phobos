@@ -73,7 +73,7 @@ and module $(MREF std, path) for manipulating path strings.
 License:   $(HTTP boost.org/LICENSE_1_0.txt, Boost License 1.0).
 Authors:   $(HTTP digitalmars.com, Walter Bright),
            $(HTTP erdani.org, Andrei Alexandrescu),
-           Jonathan M Davis
+           $(HTTP jmdavisprog.com, Jonathan M Davis)
 Source:    $(PHOBOSSRC std/_file.d)
  */
 module std.file;
@@ -132,7 +132,7 @@ else
     return _deleteme;
 }
 
-version(StdUnittest) private struct TestAliasedString
+version(unittest) private struct TestAliasedString
 {
     string get() @safe @nogc pure nothrow { return _s; }
     alias get this;
@@ -465,54 +465,242 @@ version (linux) @safe unittest
     assert(read(deleteme) == "abcd");
 }
 
-/********************************************
-Read and validates (using $(REF validate, std,utf)) a text file. $(D S)
-can be a type of array of characters of any width and constancy. No
-width conversion is performed; if the width of the characters in file
-$(D name) is different from the width of elements of $(D S),
-validation will fail.
+/++
+    Reads and validates (using $(REF validate, std, utf)) a text file. S can be
+    an array of any character type. However, no width or endian conversions are
+    performed. So, if the width or endianness of the characters in the given
+    file differ from the width or endianness of the element type of S, then
+    validation will fail.
 
-Params:
-    name = string or range of characters representing the file _name
+    Params:
+        name = string or range of characters representing the file _name
 
-Returns: Array of characters read.
+    Returns: Array of characters read.
 
-Throws: $(D FileException) on file error, $(D UTFException) on UTF
-decoding error.
- */
-
-S readText(S = string, R)(R name)
-if (isSomeString!S &&
-    (isInputRange!R && !isInfinite!R && isSomeChar!(ElementEncodingType!R) || isSomeString!R) &&
-    !isConvertibleToString!R)
+    Throws: $(LREF FileException) if there is an error reading the file,
+            $(REF UTFException, std, utf) on UTF decoding error.
++/
+S readText(S = string, R)(auto ref R name)
+if (isSomeString!S && (isInputRange!R && !isInfinite!R && isSomeChar!(ElementType!R) || is(StringTypeOf!R)))
 {
-    import std.utf : validate;
-    static auto trustedCast(void[] buf) @trusted { return cast(S) buf; }
-    auto result = trustedCast(read(name));
+    import std.algorithm.searching : startsWith;
+    import std.encoding : getBOM, BOM;
+    import std.exception : enforce;
+    import std.format : format;
+    import std.utf : UTFException, validate;
+
+    static if (is(StringTypeOf!R))
+        StringTypeOf!R filename = name;
+    else
+        auto filename = name;
+
+    static auto trustedCast(T)(void[] buf) @trusted { return cast(T) buf; }
+    auto data = trustedCast!(ubyte[])(read(filename));
+
+    immutable bomSeq = getBOM(data);
+    immutable bom = bomSeq.schema;
+
+    static if (is(Unqual!(ElementEncodingType!S) == char))
+    {
+        with(BOM) switch (bom)
+        {
+            case utf16be:
+            case utf16le: throw new UTFException("UTF-8 requested. BOM is for UTF-16");
+            case utf32be:
+            case utf32le: throw new UTFException("UTF-8 requested. BOM is for UTF-32");
+            default: break;
+        }
+    }
+    else static if (is(Unqual!(ElementEncodingType!S) == wchar))
+    {
+        with(BOM) switch (bom)
+        {
+            case utf8: throw new UTFException("UTF-16 requested. BOM is for UTF-8");
+            case utf16be:
+            {
+                version(BigEndian)
+                    break;
+                else
+                    throw new UTFException("BOM is for UTF-16 LE on Big Endian machine");
+            }
+            case utf16le:
+            {
+                version(BigEndian)
+                    throw new UTFException("BOM is for UTF-16 BE on Little Endian machine");
+                else
+                    break;
+            }
+            case utf32be:
+            case utf32le: throw new UTFException("UTF-8 requested. BOM is for UTF-32");
+            default: break;
+        }
+    }
+    else
+    {
+        with(BOM) switch (bom)
+        {
+            case utf8: throw new UTFException("UTF-16 requested. BOM is for UTF-8");
+            case utf16be:
+            case utf16le: throw new UTFException("UTF-8 requested. BOM is for UTF-16");
+            case utf32be:
+            {
+                version(BigEndian)
+                    break;
+                else
+                    throw new UTFException("BOM is for UTF-32 LE on Big Endian machine");
+            }
+            case utf32le:
+            {
+                version(BigEndian)
+                    throw new UTFException("BOM is for UTF-32 BE on Little Endian machine");
+                else
+                    break;
+            }
+            default: break;
+        }
+    }
+
+    if (data.length % ElementEncodingType!S.sizeof != 0)
+        throw new UTFException(format!"The content of %s is not UTF-%s"(filename, ElementEncodingType!S.sizeof * 8));
+
+    auto result = trustedCast!S(data);
     validate(result);
     return result;
 }
 
-///
+// Read file with UTF-8 text.
 @safe unittest
 {
-    import std.exception : enforce;
     write(deleteme, "abc"); // deleteme is the name of a temporary file
     scope(exit) remove(deleteme);
     string content = readText(deleteme);
-    enforce(content == "abc");
+    assert(content == "abc");
 }
 
-/// ditto
-S readText(S = string, R)(auto ref R name)
-if (isConvertibleToString!R)
+// Read file with UTF-8 text but try to read it as UTF-16.
+@safe unittest
 {
-    return readText!(S, StringTypeOf!R)(name);
+    import std.exception : assertThrown;
+    import std.utf : UTFException;
+
+    write(deleteme, "abc");
+    scope(exit) remove(deleteme);
+    // Throws because the file is not valid UTF-16.
+    assertThrown!UTFException(readText!wstring(deleteme));
+}
+
+// Read file with UTF-16 text.
+@safe unittest
+{
+    import std.algorithm.searching : skipOver;
+
+    write(deleteme, "\uFEFFabc"w); // With BOM
+    scope(exit) remove(deleteme);
+    auto content = readText!wstring(deleteme);
+    assert(content == "\uFEFFabc"w);
+    // Strips BOM if present.
+    content.skipOver('\uFEFF');
+    assert(content == "abc"w);
 }
 
 @safe unittest
 {
     static assert(__traits(compiles, readText(TestAliasedString(null))));
+}
+
+@system unittest
+{
+    import std.array : appender;
+    import std.bitmanip : append, Endian;
+    import std.exception : assertThrown;
+    import std.path : buildPath;
+    import std.string : representation;
+    import std.utf : UTFException;
+
+    mkdir(deleteme);
+    scope(exit) rmdirRecurse(deleteme);
+
+    immutable none8 = buildPath(deleteme, "none8");
+    immutable none16 = buildPath(deleteme, "none16");
+    immutable utf8 = buildPath(deleteme, "utf8");
+    immutable utf16be = buildPath(deleteme, "utf16be");
+    immutable utf16le = buildPath(deleteme, "utf16le");
+    immutable utf32be = buildPath(deleteme, "utf32be");
+    immutable utf32le = buildPath(deleteme, "utf32le");
+    immutable utf7 = buildPath(deleteme, "utf7");
+
+    write(none8, "京都市");
+    write(none16, "京都市"w);
+    write(utf8, (cast(char[])[0xEF, 0xBB, 0xBF]) ~ "京都市");
+    {
+        auto str = "\uFEFF京都市"w;
+        auto arr = appender!(ubyte[])();
+        foreach (c; str)
+            arr.append(c);
+        write(utf16be, arr.data);
+    }
+    {
+        auto str = "\uFEFF京都市"w;
+        auto arr = appender!(ubyte[])();
+        foreach (c; str)
+            arr.append!(ushort, Endian.littleEndian)(c);
+        write(utf16le, arr.data);
+    }
+    {
+        auto str = "\U0000FEFF京都市"d;
+        auto arr = appender!(ubyte[])();
+        foreach (c; str)
+            arr.append(c);
+        write(utf32be, arr.data);
+    }
+    {
+        auto str = "\U0000FEFF京都市"d;
+        auto arr = appender!(ubyte[])();
+        foreach (c; str)
+            arr.append!(uint, Endian.littleEndian)(c);
+        write(utf32le, arr.data);
+    }
+    write(utf7, (cast(ubyte[])[0x2B, 0x2F, 0x76, 0x38, 0x2D]) ~ "foobar".representation);
+
+    assertThrown!UTFException(readText(none16));
+    assert(readText(utf8) == (cast(char[])[0xEF, 0xBB, 0xBF]) ~ "京都市");
+    assertThrown!UTFException(readText(utf16be));
+    assertThrown!UTFException(readText(utf16le));
+    assertThrown!UTFException(readText(utf32be));
+    assertThrown!UTFException(readText(utf32le));
+    assert(readText(utf7) == (cast(char[])[0x2B, 0x2F, 0x76, 0x38, 0x2D]) ~ "foobar");
+
+    assertThrown!UTFException(readText!wstring(none8));
+    assert(readText!wstring(none16) == "京都市"w);
+    assertThrown!UTFException(readText!wstring(utf8));
+    version(BigEndian)
+    {
+        assert(readText!wstring(utf16be) == "\uFEFF京都市"w);
+        assertThrown!UTFException(readText!wstring(utf16le));
+    }
+    else
+    {
+        assertThrown!UTFException(readText!wstring(utf16be));
+        assert(readText!wstring(utf16le) == "\uFEFF京都市"w);
+    }
+    assertThrown!UTFException(readText!wstring(utf32be));
+    assertThrown!UTFException(readText!wstring(utf32le));
+    assertThrown!UTFException(readText!wstring(utf7));
+
+    assertThrown!UTFException(readText!dstring(utf8));
+    assertThrown!UTFException(readText!dstring(utf16be));
+    assertThrown!UTFException(readText!dstring(utf16le));
+    version(BigEndian)
+    {
+       assert(readText!dstring(utf32be) == "\U0000FEFF京都市"d);
+       assertThrown!UTFException(readText!dstring(utf32le));
+    }
+    else
+    {
+       assertThrown!UTFException(readText!dstring(utf32be));
+       assert(readText!dstring(utf32le) == "\U0000FEFF京都市"d);
+    }
+    assertThrown!UTFException(readText!dstring(utf7));
 }
 
 /*********************************************
@@ -2644,7 +2832,7 @@ version(Posix) @system unittest // input range of dchars
  * Get the current working directory.
  * Throws: $(D FileException) on error.
  */
-version(Windows) string getcwd()
+version(Windows) string getcwd() @trusted
 {
     import std.conv : to;
     import std.experimental.checkedint : checked;
@@ -2655,7 +2843,7 @@ version(Windows) string getcwd()
         3. the buffer (lpBuffer) is not large enough: the required size of
     the buffer, in characters, including the null-terminating character.
     */
-    version(StdUnittest)
+    version(unittest)
         enum BUF_SIZE = 10;     // trigger reallocation code
     else
         enum BUF_SIZE = 4096;   // enough for most common case
@@ -2677,7 +2865,7 @@ version(Windows) string getcwd()
         return ptr[0 .. n2].to!string;
     }
 }
-else version (Solaris) string getcwd()
+else version (Solaris) string getcwd() @trusted
 {
     /* BUF_SIZE >= PATH_MAX */
     enum BUF_SIZE = 4096;
@@ -2687,7 +2875,7 @@ else version (Solaris) string getcwd()
     scope(exit) core.stdc.stdlib.free(p);
     return p[0 .. core.stdc.string.strlen(p)].idup;
 }
-else version (Posix) string getcwd()
+else version (Posix) string getcwd() @trusted
 {
     auto p = cenforce(core.sys.posix.unistd.getcwd(null, 0),
             "cannot get cwd");
@@ -2695,7 +2883,7 @@ else version (Posix) string getcwd()
     return p[0 .. core.stdc.string.strlen(p)].idup;
 }
 
-@system unittest
+@safe unittest
 {
     auto s = getcwd();
     assert(s.length);

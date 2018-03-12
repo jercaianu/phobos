@@ -164,7 +164,17 @@ import std.encoding : EncodingScheme;
 import std.traits : isSomeChar;
 import std.typecons : Flag, Yes, No, Tuple;
 
-version(StdUnittest)
+// Curl tests for FreeBSD 32-bit are temporarily disabled.
+// https://github.com/braddr/d-tester/issues/70
+// https://issues.dlang.org/show_bug.cgi?id=18519
+version(unittest)
+version(FreeBSD)
+version(X86)
+    version = DisableCurlTests;
+
+version(DisableCurlTests) {} else:
+
+version(unittest)
 {
     import std.socket : Socket;
 
@@ -185,6 +195,7 @@ version(StdUnittest)
     private:
         string _addr;
         Tid tid;
+        TcpSocket sock;
 
         static void loop(shared TcpSocket listener)
         {
@@ -214,19 +225,30 @@ version(StdUnittest)
         import std.concurrency : spawn;
         import std.socket : INADDR_LOOPBACK, InternetAddress, TcpSocket;
 
+        tlsInit = true;
         auto sock = new TcpSocket;
         sock.bind(new InternetAddress(INADDR_LOOPBACK, InternetAddress.PORT_ANY));
         sock.listen(1);
         auto addr = sock.localAddress.toString();
         auto tid = spawn(&TestServer.loop, cast(shared) sock);
-        return TestServer(addr, tid);
+        return TestServer(addr, tid, sock);
     }
+
+    __gshared TestServer server;
+    bool tlsInit;
 
     private ref TestServer testServer()
     {
         import std.concurrency : initOnce;
-        __gshared TestServer server;
         return initOnce!server(startServer());
+    }
+
+    static ~this()
+    {
+        // terminate server from a thread local dtor of the thread that started it,
+        //  because thread_joinall is called before shared module dtors
+        if (tlsInit && server.sock)
+            server.sock.close();
     }
 
     private struct Request(T)

@@ -334,7 +334,7 @@ template QualifierOf(T)
     alias Qual7 = QualifierOf!(   immutable int);   static assert(is(Qual7!long ==    immutable long));
 }
 
-version(StdUnittest)
+version(unittest)
 {
     alias TypeQualifierList = AliasSeq!(MutableOf, ConstOf, SharedOf, SharedConstOf, ImmutableOf);
 
@@ -482,13 +482,14 @@ template fullyQualifiedName(T...)
     static assert(fullyQualifiedName!fullyQualifiedName == "std.traits.fullyQualifiedName");
 }
 
-version(StdUnittest)
+version(unittest)
 {
     // Used for both fqnType and fqnSym unittests
     private struct QualifiedNameTests
     {
         struct Inner
         {
+            bool value;
         }
 
         ref const(Inner[string]) func( ref Inner var1, lazy scope string var2 );
@@ -2238,7 +2239,7 @@ template SetFunctionAttributes(T, string linkage, uint attrs)
     }
 }
 
-version(StdUnittest)
+version(unittest)
 {
     // Some function types to test.
     int sc(scope int, ref int, out int, lazy int, int);
@@ -2526,8 +2527,10 @@ private enum NameOf(alias T) = T.stringof;
  * Get as an expression tuple the names of the fields of a struct, class, or
  * union. This consists of the fields that take up memory space, excluding the
  * hidden fields like the virtual function table pointer or a context pointer
- * for nested types. If $(D T) isn't a struct, class, or union returns an
- * expression tuple with an empty string.
+ * for nested types.
+ * Inherited fields (for classes) are not included.
+ * If $(D T) isn't a struct, class, or union, an
+ * expression tuple with an empty string is returned.
  */
 template FieldNameTuple(T)
 {
@@ -2558,6 +2561,15 @@ template FieldNameTuple(T)
 
     static struct StaticStruct2 { int a, b; }
     static assert(FieldNameTuple!StaticStruct2 == AliasSeq!("a", "b"));
+
+    static class StaticClass1 { }
+    static assert(is(FieldNameTuple!StaticClass1 == AliasSeq!()));
+
+    static class StaticClass2 : StaticClass1 { int a, b; }
+    static assert(FieldNameTuple!StaticClass2 == AliasSeq!("a", "b"));
+
+    static class StaticClass3 : StaticClass2 { int c; }
+    static assert(FieldNameTuple!StaticClass3 == AliasSeq!("c"));
 
     int i;
 
@@ -7499,7 +7511,7 @@ template mangledName(sth...)
     static assert(TL == AliasSeq!("i", "xi", "yi"));
 }
 
-version(StdUnittest) void freeFunc(string);
+version(unittest) void freeFunc(string);
 
 @safe unittest
 {

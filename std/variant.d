@@ -586,7 +586,15 @@ public:
     {
         ~this()
         {
-            fptr(OpID.destruct, &store, null);
+            // Infer the safety of the provided types
+            static if (AllowedTypes.length)
+            {
+                if (0)
+                {
+                    AllowedTypes var;
+                }
+            }
+            (() @trusted => fptr(OpID.destruct, &store, null))();
         }
     }
 
@@ -697,7 +705,7 @@ public:
     }
 
     ///
-    version(StdUnittest)
+    version(unittest)
     @system unittest
     {
         Variant a;
@@ -730,7 +738,7 @@ public:
     }
 
     ///
-    version(StdUnittest)
+    version(unittest)
     @system unittest
     {
         Variant a = 5;
@@ -1122,7 +1130,7 @@ public:
     }
 
     ///
-    version(StdUnittest)
+    version(unittest)
     @system unittest
     {
         Variant a = new int[10];
@@ -1206,7 +1214,6 @@ public:
         return 0;
     }
 }
-
 
 @system unittest
 {
@@ -1465,6 +1472,18 @@ pure nothrow @nogc
 
     fun!(S4)(v);
     static assert(!is(typeof(fun!(shared(S4))(v))));
+}
+
+@safe unittest
+{
+    Algebraic!(int) x;
+
+    static struct SafeS
+    {
+        @safe ~this() {}
+    }
+
+    Algebraic!(SafeS) y;
 }
 
 /**

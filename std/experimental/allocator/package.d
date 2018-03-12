@@ -63,7 +63,7 @@ D's allocators have a layered structure in both implementation and documentation
 
 $(OL
 $(LI A high-level, dynamically-typed layer (described further down in this
-module). It consists of an interface called $(LREF IAllocator), which concret;
+module). It consists of an interface called $(LREF IAllocator), which concrete
 allocators need to implement. The interface primitives themselves are oblivious
 to the type of the objects being allocated; they only deal in `void[]`, by
 necessity of the interface being dynamic (as opposed to type-parameterized).
@@ -405,7 +405,8 @@ struct RCIAllocator
     private IAllocator _alloc;
 
 nothrow:
-    private this(this _)(IAllocator alloc)
+    private @nogc @safe
+    this(this _)(IAllocator alloc)
     {
         assert(alloc);
         _alloc = alloc;
@@ -420,7 +421,7 @@ nothrow:
         }
     }
 
-    @nogc
+    @nogc @safe
     ~this()
     {
         if (_alloc !is null)
@@ -430,7 +431,7 @@ nothrow:
         }
     }
 
-    @nogc
+    @nogc @safe
     auto ref opAssign()(typeof(this) rhs)
     {
         if (_alloc is rhs._alloc)
@@ -745,19 +746,20 @@ in $(A std_experimental_allocator_building_blocks.html,
 `std.experimental.allocator.building_blocks`), then adapt the composed allocator
 to `RCISharedAllocator` (possibly by using $(LREF sharedAllocatorObject) below).
 */
-struct RCISharedAllocator
+shared struct RCISharedAllocator
 {
-    private shared ISharedAllocator _alloc;
+    private ISharedAllocator _alloc;
 
 nothrow:
-    private this(shared ISharedAllocator alloc)
+    private @nogc @safe
+    this(shared ISharedAllocator alloc)
     {
         assert(alloc);
         _alloc = alloc;
     }
 
-    @nogc
-    this(this) shared
+    @nogc @safe
+    this(this)
     {
         if (_alloc !is null)
         {
@@ -765,7 +767,7 @@ nothrow:
         }
     }
 
-    @nogc
+    @nogc @safe
     ~this()
     {
         if (_alloc !is null)
@@ -775,8 +777,8 @@ nothrow:
         }
     }
 
-    @nogc
-    auto ref opAssign()(shared RCISharedAllocator rhs) shared
+    @nogc @safe
+    auto ref opAssign()(RCISharedAllocator rhs)
     {
         if (_alloc is rhs._alloc)
         {
@@ -794,91 +796,91 @@ nothrow:
     }
 
     pure nothrow @safe @nogc
-    bool isNull(this _)() shared
+    bool isNull(this _)()
     {
         return _alloc is null;
     }
 
-    @property uint alignment() shared
+    @property uint alignment()
     {
         assert(_alloc);
         return _alloc.alignment();
     }
 
-    size_t goodAllocSize(size_t s) shared
+    size_t goodAllocSize(size_t s)
     {
         assert(_alloc);
         return _alloc.goodAllocSize(s);
     }
 
-    void[] allocate(size_t n, TypeInfo ti = null) shared
+    void[] allocate(size_t n, TypeInfo ti = null)
     {
         assert(_alloc);
         return _alloc.allocate(n, ti);
     }
 
-    void[] alignedAllocate(size_t n, uint a) shared
+    void[] alignedAllocate(size_t n, uint a)
     {
         assert(_alloc);
         return _alloc.alignedAllocate(n, a);
     }
 
-    void[] allocateAll() shared
+    void[] allocateAll()
     {
         assert(_alloc);
         return _alloc.allocateAll();
     }
 
-    bool expand(ref void[] b, size_t size) shared
+    bool expand(ref void[] b, size_t size)
     {
         assert(_alloc);
         return _alloc.expand(b, size);
     }
 
-    bool reallocate(ref void[] b, size_t size) shared
+    bool reallocate(ref void[] b, size_t size)
     {
         assert(_alloc);
         return _alloc.reallocate(b, size);
     }
 
-    bool alignedReallocate(ref void[] b, size_t size, uint alignment) shared
+    bool alignedReallocate(ref void[] b, size_t size, uint alignment)
     {
         assert(_alloc);
         return _alloc.alignedReallocate(b, size, alignment);
     }
 
-    Ternary owns(void[] b) shared
+    Ternary owns(void[] b)
     {
         assert(_alloc);
         return _alloc.owns(b);
     }
 
-    Ternary resolveInternalPointer(const void* p, ref void[] result) shared
+    Ternary resolveInternalPointer(const void* p, ref void[] result)
     {
         assert(_alloc);
         return _alloc.resolveInternalPointer(p, result);
     }
 
-    bool deallocate(void[] b) shared
+    bool deallocate(void[] b)
     {
         assert(_alloc);
         return _alloc.deallocate(b);
     }
 
-    bool deallocateAll() shared
+    bool deallocateAll()
     {
         assert(_alloc);
         return _alloc.deallocateAll();
     }
 
-    Ternary empty() shared
+    Ternary empty()
     {
         assert(_alloc);
         return _alloc.empty();
     }
 }
 
-private shared RCISharedAllocator _processAllocator;
+private RCISharedAllocator _processAllocator;
 private RCIAllocator _threadAllocator;
 
 nothrow @nogc @safe
@@ -1020,23 +1022,23 @@ for allocating memory shared across threads. Objects created using this
 allocator can be cast to $(D shared).
 */
 @trusted nothrow @nogc
-@property ref shared(RCISharedAllocator) processAllocator()
+@property ref RCISharedAllocator processAllocator()
 {
     import std.experimental.allocator.gc_allocator : GCAllocator;
     import std.concurrency : initOnce;
 
-    static shared(RCISharedAllocator)* forceAttributes()
+    static RCISharedAllocator* forceAttributes()
     {
         return &initOnce!_processAllocator(
                 sharedAllocatorObject(GCAllocator.instance));
     }
 
-    return *(cast(shared(RCISharedAllocator)* function() nothrow @nogc)(&forceAttributes))();
+    return *(cast(RCISharedAllocator* function() nothrow @nogc)(&forceAttributes))();
 }
 
 /// Ditto
 nothrow @system @nogc
-@property void processAllocator(shared RCISharedAllocator a)
+@property void processAllocator(RCISharedAllocator a)
 {
     assert(!a.isNull);
     _processAllocator = a;
@@ -1056,7 +1058,7 @@ nothrow @system @nogc
     testAllocatorObject(theAllocator);
 
     shared SharedFreeList!(Mallocator, chooseAtRuntime, chooseAtRuntime) sharedFL;
-    shared RCISharedAllocator sharedFLObj = sharedAllocatorObject(sharedFL);
+    RCISharedAllocator sharedFLObj = sharedAllocatorObject(sharedFL);
     alias SharedAllocT = CSharedAllocatorImpl!(
             shared SharedFreeList!(
                 Mallocator, chooseAtRuntime, chooseAtRuntime));
@@ -1066,7 +1068,7 @@ nothrow @system @nogc
     testAllocatorObject(sharedFLObj);
 
     // Test processAllocator setter
-    shared RCISharedAllocator oldProcessAllocator = processAllocator;
+    RCISharedAllocator oldProcessAllocator = processAllocator;
     processAllocator = sharedFLObj;
     assert((cast(SharedAllocT)(sharedFLObj._alloc)).rc == 2);
     assert(processAllocator._alloc is sharedFLObj._alloc);
@@ -1080,7 +1082,7 @@ nothrow @system @nogc
     assert((cast(SharedAllocT)(sharedFLObj._alloc)).rc == 1);
     assert(processAllocator is oldProcessAllocator);
 
-    shared RCISharedAllocator indirectShFLObj = sharedAllocatorObject(&sharedFL);
+    RCISharedAllocator indirectShFLObj = sharedAllocatorObject(&sharedFL);
     testAllocatorObject(indirectShFLObj);
     alias IndirectSharedAllocT = CSharedAllocatorImpl!(
             shared SharedFreeList!(
@@ -1930,7 +1932,7 @@ if (isInputRange!R && !isInfinite!R)
     assert(arr2.map!`a.val`.equal(iota(32, 204, 2)));
 }
 
-version(StdUnittest)
+version(unittest)
 {
     private struct ForcedInputRange
     {
@@ -2598,7 +2600,7 @@ statically-typed allocator.)
 //nothrow @safe
 //nothrow @nogc @safe
 nothrow
-shared(RCISharedAllocator) sharedAllocatorObject(A)(auto ref A a)
+RCISharedAllocator sharedAllocatorObject(A)(auto ref A a)
 if (!isPointer!A)
 {
     import std.conv : emplace;
@@ -2606,16 +2608,10 @@ if (!isPointer!A)
     {
         enum s = stateSize!(CSharedAllocatorImpl!A).divideRoundUp(ulong.sizeof);
         static shared ulong[s] state;
-        static shared RCISharedAllocator result;
+        static RCISharedAllocator result;
         if (result.isNull)
         {
             // Don't care about a few races
-            //auto tmp = emplace!(CSharedAllocatorImpl!A)(
-                            //(() @trusted => cast(ulong[]) state[])());
-            //result = RCISharedAllocator(
-                        //(() @trusted => (cast(shared CSharedAllocatorImpl!A)(
-                            //tmp)
-                        //))());
             result = RCISharedAllocator(
                     (cast(shared CSharedAllocatorImpl!A)(
                         emplace!(CSharedAllocatorImpl!A)(
@@ -2644,7 +2640,7 @@ if (!isPointer!A)
 }
 
 /// Ditto
-shared(RCISharedAllocator) sharedAllocatorObject(A)(A* pa)
+RCISharedAllocator sharedAllocatorObject(A)(A* pa)
 {
     assert(pa);
     import std.conv : emplace;

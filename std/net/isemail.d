@@ -1866,7 +1866,7 @@ static fourChars = ctRegex!(`^[0-9A-Fa-f]{0,4}$`.to!(const(Char)[]));
 a => a.matchFirst(fourChars).empty
 ---
 +/
-private bool isUpToFourHexChars(Char)(scope const(Char)[] s)
+bool isUpToFourHexChars(Char)(scope const(Char)[] s)
 {
     import std.ascii : isHexDigit;
     if (s.length > 4) return false;
@@ -1875,7 +1875,7 @@ private bool isUpToFourHexChars(Char)(scope const(Char)[] s)
     return true;
 }
 
-version(StdUnittest) @nogc nothrow pure @safe unittest
+version(unittest) @nogc nothrow pure @safe unittest
 {
     assert(!isUpToFourHexChars("12345"));
     assert(!isUpToFourHexChars("defg"));
@@ -1894,7 +1894,7 @@ Note that only the first item of "matchAll" was ever used in practice
 so we can return `const(Char)[]` instead of `const(Char)[][]` using a
 zero-length string to indicate no match.
 +/
-private const(Char)[] matchIPSuffix(Char)(return const(Char)[] s) @nogc nothrow pure @safe
+const(Char)[] matchIPSuffix(Char)(return const(Char)[] s) @nogc nothrow pure @safe
 {
     size_t end = s.length;
     if (end < 7) return null;
@@ -1945,7 +1945,7 @@ private const(Char)[] matchIPSuffix(Char)(return const(Char)[] s) @nogc nothrow 
     return s[start .. $];
 }
 
-version(StdUnittest) @nogc nothrow pure @safe unittest
+version(unittest) @nogc nothrow pure @safe unittest
 {
     assert(matchIPSuffix("255.255.255.255") == "255.255.255.255");
     assert(matchIPSuffix("babaev 176.16.0.1") == "176.16.0.1");

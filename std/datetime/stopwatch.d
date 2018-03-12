@@ -42,7 +42,7 @@ $(TR $(TD Flags) $(TD
     rather than the deprecated ones from std.datetime.package.
 
     License:   $(HTTP www.boost.org/LICENSE_1_0.txt, Boost License 1.0).
-    Authors:   Jonathan M Davis and Kato Shoichi
+    Authors:   $(HTTP jmdavisprog.com, Jonathan M Davis) and Kato Shoichi
     Source:    $(PHOBOSSRC std/datetime/_stopwatch.d)
 +/
 module std.datetime.stopwatch;
@@ -447,7 +447,7 @@ Duration[fun.length] benchmark(fun...)(uint n)
     void f0() nothrow {}
     void f1() nothrow { auto b = to!string(a); }
     auto r = benchmark!(f0, f1)(1000);
-    assert(r[0] > Duration.zero);
+    assert(r[0] >= Duration.zero);
     assert(r[1] > Duration.zero);
     assert(r[1] > r[0]);
     assert(r[0] < seconds(1));
