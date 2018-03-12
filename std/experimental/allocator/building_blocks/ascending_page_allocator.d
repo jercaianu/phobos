@@ -542,18 +542,18 @@ else
         // Inject common function implementations
         mixin AscendingPageAllocatorImpl!true;
 
-        void[] allocate(size_t n) nothrow @nogc
+        void[] allocate(size_t n)
         {
             return allocateImpl(n, 1);
         }
 
-        void[] alignedAllocate(size_t n, uint a) nothrow @nogc
+        void[] alignedAllocate(size_t n, uint a)
         {
             // For regular `allocate` calls, `a` will be set to 1
             return allocateImpl(n, a);
         }
 
-        private void[] allocateImpl(size_t n, uint a) nothrow @nogc
+        private void[] allocateImpl(size_t n, uint a)
         {
             import std.algorithm.comparison : min;
 
@@ -593,8 +593,11 @@ else
 
             if (localExtraAlloc != 0)
             {
-                if (!extendMemoryProtection(localOldLimit, localExtraAlloc))
+                if (!extendMemoryProtection(localOldLimit, localExtraAlloc)) {
+                    import std.stdio;
+                    writeln("it was that moment jackson knew, he fucked up");
                     return null;
+                }
             }
 
             return cast(void[]) localResult[0 .. n];

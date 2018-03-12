@@ -42,9 +42,6 @@ private:
         }
     }
 
-    static if (stateSize!ParentAllocator) ParentAllocator parent;
-    else alias parent = ParentAllocator.instance;
-
     AlignedBlockNode *root;
     int numNodes;
 
@@ -94,7 +91,9 @@ private:
         static if (isShared)
         import core.atomic : atomicOp;
 
+        import std.stdio;
         void[] buf = parent.alignedAllocate(alignment, alignment);
+        //writeln("here");
         if (buf is null)
             return false;
 
@@ -103,6 +102,8 @@ private:
         static if (timeDbg)
         swPageAlloc.start();
         ubyte[] payload = ((cast(ubyte*) buf[AlignedBlockNode.sizeof .. $])[0 .. buf.length - AlignedBlockNode.sizeof]);
+        payload[0] = 1;
+        //writeln("here bro");
         newNode.bAlloc = Allocator(payload);
         static if (timeDbg)
         swPageAlloc.stop();
@@ -126,6 +127,8 @@ private:
     }
 
 public:
+    static if (stateSize!ParentAllocator) ParentAllocator parent;
+    else alias parent = ParentAllocator.instance;
     enum ulong alignment = theAlignment;
 
     static if (hasMember!(ParentAllocator, "owns"))

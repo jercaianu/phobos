@@ -57,9 +57,7 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
     import core.internal.spinlock : SpinLock;
 
     static assert(theBlockSize > 0 && theAlignment.isGoodStaticAlignment);
-    static assert(theBlockSize == chooseAtRuntime
-        || theBlockSize % theAlignment == 0,
-        "Block size must be a multiple of the alignment");
+    //static assert(theBlockSize == chooseAtRuntime || theBlockSize % theAlignment == 0, "Block size must be a multiple of the alignment");
 
     /**
     If $(D blockSize == chooseAtRuntime), $(D BitmappedBlock) offers a read/write
@@ -175,13 +173,18 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
     */
     this(ubyte[] data)
     {
+        import std.stdio;
+
         immutable a = data.ptr.effectiveAlignment;
         assert(a >= size_t.alignof || !data.ptr,
             "Data must be aligned properly");
 
+        //writeln("x");
+        //writeln(1);
         immutable ulong totalBits = data.length * 8;
         immutable ulong bitsPerBlock = blockSize * 8 + 1;
         _blocks = totalBits / bitsPerBlock;
+        //writeln(2);
 
         // Reality is a bit more complicated, iterate until a good number of
         // blocks found.
@@ -211,7 +214,11 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
             _payload = cast(typeof(_payload)) payload;
             break;
         }
+        //writeln(3);
+
         _blocks = cast(typeof(_blocks)) localBlocks;
+        //writeln(4);
+
     }
 
     /// Ditto
@@ -259,6 +266,7 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
         }
         void* end = cast(void*) (_payload.ptr + _payload.length);
         parent.deallocate(start[0 .. end - start]);
+
     }
 
     static if (multiBlock)

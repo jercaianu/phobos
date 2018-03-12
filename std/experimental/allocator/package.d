@@ -223,6 +223,9 @@ Source: $(PHOBOSSRC std/experimental/_allocator)
 
 module std.experimental.allocator;
 
+import std.experimental.allocator.building_blocks.ascending_page_allocator;
+import std.experimental.allocator.building_blocks.null_allocator;
+import std.experimental.allocator.building_blocks.segregator;
 public import std.experimental.allocator.common,
     std.experimental.allocator.typed;
 
@@ -1014,13 +1017,65 @@ nothrow @system @nogc
     //...
 }
 
+/**
+
+Stores an allocator object in thread-local storage (i.e. non-$(D shared) D
+global). $(D ThreadLocal!A) is a subtype of $(D A) so it appears to implement
+$(D A)'s allocator primitives.
+
+$(D A) must hold state, otherwise $(D ThreadLocal!A) refuses instantiation. This
+means e.g. $(D ThreadLocal!Mallocator) does not work because $(D Mallocator)'s
+state is not stored as members of $(D Mallocator), but instead is hidden in the
+C library implementation.
+
+*/
+struct ThreadLocal(A)
+{
+    static assert(stateSize!A,
+        typeof(A).stringof
+        ~ " does not have state so it cannot be used with ThreadLocal");
+
+    /**
+    The allocator instance.
+    */
+    static A instance;
+
+    /**
+    `ThreadLocal!A` is a subtype of `A` so it appears to implement `A`'s
+    allocator primitives.
+    */
+    alias instance this;
+
+    /**
+    `ThreadLocal` disables all constructors. The intended usage is
+    `ThreadLocal!A.instance`.
+    */
+    @disable this();
+    /// Ditto
+    @disable this(this);
+}
+
+///
+unittest
+{
+    import std.experimental.allocator.building_blocks.free_list : FreeList;
+    import std.experimental.allocator.gc_allocator : GCAllocator;
+    import std.experimental.allocator.mallocator : Mallocator;
+
+    static assert(!is(ThreadLocal!Mallocator));
+    static assert(!is(ThreadLocal!GCAllocator));
+    alias ThreadLocal!(FreeList!(GCAllocator, 0, 8)) Allocator;
+    auto b = Allocator.instance.allocate(5);
+    static assert(hasMember!(Allocator, "allocate"));
+}
+
 struct TypeAllocator(T)
 {
     import std.experimental.allocator.building_blocks.aligned_block_list;
     import std.experimental.allocator.building_blocks.bitmapped_block;
     import std.experimental.allocator.building_blocks.ascending_page_allocator;
 
-    enum blockSize = roundUpToPowerOf2(stateSize!T);
+    enum blockSize = stateSize!T;
     enum maxBlock = (1 << 15);
 
     static if (blockSize > maxBlock)
@@ -1028,39 +1083,186 @@ struct TypeAllocator(T)
         static assert(0, "Not implemented for large objects");
     }
 
-    alias GlobalObjectAllocator = SharedAlignedBlockList!(
-        SharedBitmappedBlock!(blockSize, platformAlignment, NullAllocator, No.multiblock),
-        SharedAscendingPageAllocator*,
-        blockSize * 1024);
-
-    alias GlobalArrayAllocator = SharedAlignedBlockList!(
-        SharedBitmappedBlock!(blockSize, platformAlignment, NullAllocator, Yes.multiblock),
-        SharedAscendingPageAllocator*,
-        blockSize * 1024);
+    bool isInit = 0;
 
     alias LocalObjectAllocator = AlignedBlockList!(
         BitmappedBlock!(blockSize, platformAlignment, NullAllocator, No.multiblock),
         SharedAscendingPageAllocator*,
         blockSize * 1024);
 
-    alias LocalArrayAllocator = AlignedBlockList!(
-        BitmappedBlock!(blockSize, platformAlignment, NullAllocator, Yes.multiblock),
-        SharedAscendingPageAllocator*,
-        blockSize * 1024);
+    alias LocalArrayAllocator = Segregator!(
+        8,
+        AlignedBlockList!(BitmappedBlock!(8, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 12),
+        Segregator!(
 
-    GlobalObjectAllocator
+        16,
+        AlignedBlockList!(BitmappedBlock!(16, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 12),
+        Segregator!(
+
+        32,
+        AlignedBlockList!(BitmappedBlock!(32, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 13),
+        Segregator!(
+
+        64,
+        AlignedBlockList!(BitmappedBlock!(64, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 14),
+        Segregator!(
+
+        128,
+        AlignedBlockList!(BitmappedBlock!(128, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 15),
+        Segregator!(
+
+        256,
+        AlignedBlockList!(BitmappedBlock!(256, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 16),
+        Segregator!(
+
+        512,
+        AlignedBlockList!(BitmappedBlock!(512, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 17),
+        Segregator!(
+
+        1024,
+        AlignedBlockList!(BitmappedBlock!(1024, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 18),
+        Segregator!(
+
+        2048,
+        AlignedBlockList!(BitmappedBlock!(2048, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 19),
+        Segregator!(
+
+        1 << 12,
+        AlignedBlockList!(BitmappedBlock!(1 << 12, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 20),
+        Segregator!(
+
+        1 << 13,
+        AlignedBlockList!(BitmappedBlock!(1 << 13, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 21),
+        Segregator!(
+
+        1 << 14,
+        AlignedBlockList!(BitmappedBlock!(1 << 14, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 22),
+        Segregator!(
+
+        1 << 15,
+        AlignedBlockList!(BitmappedBlock!(1 << 15, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 23),
+        SharedAscendingPageAllocator*
+        )))))))))))));
+
+        LocalObjectAllocator loa;
+        LocalArrayAllocator laa;
+
+    void initAlloc(SharedAscendingPageAllocator* rootAlloc)
+    {
+        laa.allocatorForSize!(1 << 16) = rootAlloc;
+        laa.allocatorForSize!(1 << 15).parent = rootAlloc;
+        laa.allocatorForSize!(1 << 14).parent = rootAlloc;
+        laa.allocatorForSize!(1 << 13).parent = rootAlloc;
+        laa.allocatorForSize!(1 << 12).parent = rootAlloc;
+        laa.allocatorForSize!2048.parent = rootAlloc;
+        laa.allocatorForSize!1024.parent = rootAlloc;
+        laa.allocatorForSize!512.parent = rootAlloc;
+        laa.allocatorForSize!256.parent = rootAlloc;
+        laa.allocatorForSize!128.parent = rootAlloc;
+        laa.allocatorForSize!64.parent = rootAlloc;
+        laa.allocatorForSize!32.parent = rootAlloc;
+        laa.allocatorForSize!16.parent = rootAlloc;
+        laa.allocatorForSize!8.parent = rootAlloc;
+
+        loa.parent = rootAlloc;
+        isInit = true;
+    }
+
+    void[] allocate(const size_t n)
+    {
+        if (n == stateSize!T)
+            return loa.allocate(n);
+        return laa.allocate(n);
+    }
+
+    bool deallocate(void[] b)
+    {
+        if (b.length == stateSize!T)
+            return loa.deallocate(b);
+        return laa.deallocate(b);
+    }
 }
 
-void getTAllocator(T)()
+TypeAllocator!(T) *getTLAllocator(T)()
 {
     static TypeAllocator!T a;
+    return &a;
 }
 
 
-shared struct SuperAllocator
+struct ThreadLocalAllocator
 {
+    void[] typedAllocate(T)(const size_t n)
+    {
+        auto tlalloc = getTLAllocator!T();
+        if (!tlalloc.isInit)
+            tlalloc.initAlloc(&rootAllocator);
+        return tlalloc.allocate(n);
+    }
 
+    bool typedDeallocate(T)(void[] b)
+    {
+        auto tlalloc = getTLAllocator!T();
+        return tlalloc.deallocate(b);
+    }
 }
+__gshared SharedAscendingPageAllocator rootAllocator;
+
+void main()
+{
+    import std.stdio;
+    rootAllocator = SharedAscendingPageAllocator(1UL << 40);
+    ThreadLocalAllocator tla;
+
+    import std.experimental.allocator.building_blocks.aligned_block_list;
+    import std.experimental.allocator.building_blocks.bitmapped_block;
+    import std.experimental.allocator.building_blocks.region;
+    import std.experimental.allocator.building_blocks.ascending_page_allocator;
+    import std.random;
+    import std.algorithm.sorting : sort;
+    import core.thread : ThreadGroup;
+    import core.internal.spinlock : SpinLock;
+
+    enum pageSize = 4096;
+    enum numThreads = 2;
+    enum maxIter = 20;
+    enum totalAllocs = maxIter * numThreads;
+    size_t count = 0;
+    SpinLock lock = SpinLock(SpinLock.Contention.brief);
+
+    void[][totalAllocs] buf;
+
+    alias MiniAlloc = AlignedBlockList!(
+        BitmappedBlock!(16, platformAlignment, NullAllocator, No.multiblock),
+        SharedAscendingPageAllocator*,
+        8 * 1024);
+
+    MiniAlloc[numThreads] ma;
+    for (int i = 0; i < numThreads; i++)
+        ma[i].parent = &rootAllocator;
+
+    void fun()
+    {
+        //ThreadLocalAllocator tla;
+        ulong id;
+        lock.lock();
+        id = count++;
+        lock.unlock;
+        auto v = ma[id].allocate(16);
+        //ulong *x = tla.make!ulong;
+        //*x = id;
+        //writeln(*x);
+
+        //tla.dispose(x);
+    }
+    auto tg = new ThreadGroup;
+    foreach (i; 0 .. numThreads)
+    {
+        tg.create(&fun);
+    }
+    tg.joinAll();
+}
+
 
 /**
 Gets/sets the allocator for the current process. This allocator must be used
@@ -1169,7 +1371,14 @@ auto make(T, Allocator, A...)(auto ref Allocator alloc, auto ref A args)
 {
     import std.algorithm.comparison : max;
     import std.conv : emplace, emplaceRef;
-    auto m = alloc.allocate(max(stateSize!T, 1));
+    static if (hasMember!(Allocator, "typedAllocate"))
+    {
+        auto m = alloc.typedAllocate!T(max(stateSize!T, 1));
+    }
+    else
+    {
+        auto m = alloc.allocate(max(stateSize!T, 1));
+    }
     if (!m.ptr) return null;
 
     // make can only be @safe if emplace or emplaceRef is `pure`
@@ -1192,10 +1401,17 @@ auto make(T, Allocator, A...)(auto ref Allocator alloc, auto ref A args)
             // Assume deallocation is safe because:
             // 1) in case of failure, `m` is the only reference to this memory
             // 2) `m` is known to originate from `alloc`
-            () @trusted { alloc.deallocate(m); }();
+            () @trusted {
+            static if (hasMember!(Allocator, "typedDeallocate"))
+            alloc.typedDeallocate!T(m);
+            else
+            alloc.deallocate(m); }();
         }
         else
         {
+            static if (hasMember!(Allocator, "typedDeallocate"))
+            alloc.typedDeallocate!T(m);
+            else
             alloc.deallocate(m);
         }
     }
@@ -1494,6 +1710,9 @@ exception if the copy operation throws.
 T[] makeArray(T, Allocator)(auto ref Allocator alloc, size_t length)
 {
     if (!length) return null;
+    static if (hasMember!(Allocator, "typedAllocate"))
+    auto m = alloc.typedAllocate!T(T.sizeof * length);
+    else
     auto m = alloc.allocate(T.sizeof * length);
     if (!m.ptr) return null;
     alias U = Unqual!T;
@@ -2275,6 +2494,9 @@ void dispose(A, T)(auto ref A alloc, auto ref T* p)
     {
         destroy(*p);
     }
+    static if (hasMember!(A, "typedDeallocate"))
+    alloc.typedDeallocate!T((cast(void*) p)[0 .. T.sizeof]);
+    else
     alloc.deallocate((cast(void*) p)[0 .. T.sizeof]);
     static if (__traits(isRef, p))
         p = null;
@@ -2299,6 +2521,9 @@ if (is(T == class) || is(T == interface))
         alias ob = p;
     auto support = (cast(void*) ob)[0 .. typeid(ob).initializer.length];
     destroy(p);
+    static if (hasMember!(A, "typedDeallocate"))
+    alloc.typedDeallocate!T(support);
+    else
     alloc.deallocate(support);
     static if (__traits(isRef, p))
         p = null;
@@ -2314,6 +2539,9 @@ void dispose(A, T)(auto ref A alloc, auto ref T[] array)
             destroy(e);
         }
     }
+    static if (hasMember!(A, "typedDeallocate"))
+    alloc.typedDeallocate!T(array);
+    else
     alloc.deallocate(array);
     static if (__traits(isRef, array))
         array = null;
@@ -3193,58 +3421,6 @@ nothrow:
 }
 
 __EOF__
-
-/**
-
-Stores an allocator object in thread-local storage (i.e. non-$(D shared) D
-global). $(D ThreadLocal!A) is a subtype of $(D A) so it appears to implement
-$(D A)'s allocator primitives.
-
-$(D A) must hold state, otherwise $(D ThreadLocal!A) refuses instantiation. This
-means e.g. $(D ThreadLocal!Mallocator) does not work because $(D Mallocator)'s
-state is not stored as members of $(D Mallocator), but instead is hidden in the
-C library implementation.
-
-*/
-struct ThreadLocal(A)
-{
-    static assert(stateSize!A,
-        typeof(A).stringof
-        ~ " does not have state so it cannot be used with ThreadLocal");
-
-    /**
-    The allocator instance.
-    */
-    static A instance;
-
-    /**
-    `ThreadLocal!A` is a subtype of `A` so it appears to implement `A`'s
-    allocator primitives.
-    */
-    alias instance this;
-
-    /**
-    `ThreadLocal` disables all constructors. The intended usage is
-    `ThreadLocal!A.instance`.
-    */
-    @disable this();
-    /// Ditto
-    @disable this(this);
-}
-
-///
-unittest
-{
-    import std.experimental.allocator.building_blocks.free_list : FreeList;
-    import std.experimental.allocator.gc_allocator : GCAllocator;
-    import std.experimental.allocator.mallocator : Mallocator;
-
-    static assert(!is(ThreadLocal!Mallocator));
-    static assert(!is(ThreadLocal!GCAllocator));
-    alias ThreadLocal!(FreeList!(GCAllocator, 0, 8)) Allocator;
-    auto b = Allocator.instance.allocate(5);
-    static assert(hasMember!(Allocator, "allocate"));
-}
 
 /*
 (Not public.)
