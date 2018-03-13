@@ -3292,6 +3292,11 @@ Returns:
 
 See_Also:
     $(HTTP en.wikipedia.org/wiki/Prefix_sum, Prefix Sum)
+
+Note:
+
+    In functional programming languages this is typically called `scan`, `scanl`,
+    `scanLeft` or `reductions`.
 +/
 template cumulativeFold(fun...)
 if (fun.length >= 1)
@@ -3655,31 +3660,31 @@ The number of seeds must be correspondingly increased.
 
 // splitter
 /**
-Lazily splits a range using an element as a separator. This can be used with
-any narrow string type or sliceable range type, but is most popular with string
-types.
+Lazily splits a range using an element or range as a separator.
+Separator ranges can be any narrow string type or sliceable range type.
 
 Two adjacent separators are considered to surround an empty element in
 the split range. Use `filter!(a => !a.empty)` on the result to compress
 empty elements.
 
-The predicate is passed to $(REF binaryFun, std,functional), and can either accept
-a string, or any callable that can be executed via `pred(element, s)`.
+The predicate is passed to $(REF binaryFun, std,functional) and accepts
+any callable function that can be executed via `pred(element, s)`.
 
-If the empty range is given, the result is an empty range. If a range with
-one separator is given, the result is a range with two empty elements.
+Notes:
+    If splitting a string on whitespace and token compression is desired,
+    consider using `splitter` without specifying a separator.
 
-If splitting a string on whitespace and token compression is desired,
-consider using `splitter` without specifying a separator (see fourth overload
-below).
+    If no separator is passed, the $(REF_ALTTEXT, unary, unaryFun, std,functional)
+    predicate `isTerminator` decides whether to accept an element of `r`.
 
 Params:
     pred = The predicate for comparing each element with the separator,
         defaulting to `"a == b"`.
     r = The $(REF_ALTTEXT input range, isInputRange, std,range,primitives) to be
-        split. Must support slicing and `.length`.
-    s = The element to be treated as the separator between range segments to be
-        split.
+        split. Must support slicing and `.length` or be a narrow string type.
+    s = The element (or range) to be treated as the separator
+        between range segments to be split.
+    isTerminator = The predicate for deciding where to split the range when no separator is passed
 
 Constraints:
     The predicate `pred` needs to accept an element of `r` and the
@@ -3690,10 +3695,15 @@ Returns:
     is a $(REF_ALTTEXT forward range, isForwardRange, std,range,primitives)
     or $(REF_ALTTEXT bidirectional range, isBidirectionalRange, std,range,primitives),
     the returned range will be likewise.
+    When a range is used a separator, bidirectionality isn't possible.
+
+    If an empty range is given, the result is an empty range. If a range with
+    one separator is given, the result is a range with two empty elements.
 
 See_Also:
  $(REF _splitter, std,regex) for a version that splits using a regular
-expression defined separator.
+expression defined separator and
+ $(REF _splitter, std,array) for a version that splits eagerly.
 */
 auto splitter(alias pred = "a == b", Range, Separator)(Range r, Separator s)
 if (is(typeof(binaryFun!pred(r.front, s)) : bool)
@@ -3850,46 +3860,127 @@ if (is(typeof(binaryFun!pred(r.front, s)) : bool)
     return Result(r, s);
 }
 
-///
+/// Basic splitting with characters and numbers.
+@safe unittest
+{
+    import std.algorithm.comparison : equal;
+
+    assert("a|bc|def".splitter('|').equal([ "a", "bc", "def" ]));
+
+    int[] a = [1, 0, 2, 3, 0, 4, 5, 6];
+    int[][] w = [ [1], [2, 3], [4, 5, 6] ];
+    assert(a.splitter(0).equal(w));
+}
+
+/// Adjacent separators.
+@safe unittest
+{
+    import std.algorithm.comparison : equal;
+
+    assert("|ab|".splitter('|').equal([ "", "ab", "" ]));
+    assert("ab".splitter('|').equal([ "ab" ]));
+
+    assert("a|b||c".splitter('|').equal([ "a", "b", "", "c" ]));
+    assert("hello  world".splitter(' ').equal([ "hello", "", "world" ]));
+
+    auto a = [ 1, 2, 0, 0, 3, 0, 4, 5, 0 ];
+    auto w = [ [1, 2], [], [3], [4, 5], [] ];
+    assert(a.splitter(0).equal(w));
+}
+
+/// Empty and separator-only ranges.
+@safe unittest
+{
+    import std.algorithm.comparison : equal;
+    import std.range : empty;
+
+    assert("".splitter('|').empty);
+    assert("|".splitter('|').equal([ "", "" ]));
+    assert("||".splitter('|').equal([ "", "", "" ]));
+}
+
+/// Use a range for splitting
+@safe unittest
+{
+    import std.algorithm.comparison : equal;
+
+    assert("a=>bc=>def".splitter("=>").equal([ "a", "bc", "def" ]));
+    assert("a|b||c".splitter("||").equal([ "a|b", "c" ]));
+    assert("hello  world".splitter("  ").equal([ "hello", "world" ]));
+
+    int[] a = [ 1, 2, 0, 0, 3, 0, 4, 5, 0 ];
+    int[][] w = [ [1, 2], [3, 0, 4, 5, 0] ];
+    assert(a.splitter([0, 0]).equal(w));
+
+    a = [ 0, 0 ];
+    assert(a.splitter([0, 0]).equal([ (int[]).init, (int[]).init ]));
+
+    a = [ 0, 0, 1 ];
+    assert(a.splitter([0, 0]).equal([ [], [1] ]));
+}
+
+/// Custom predicate functions.
 @safe unittest
 {
     import std.algorithm.comparison : equal;
     import std.ascii : toLower;
-    import std.range : empty, retro;
 
-    // Basic splitting with characters and numbers.
-    assert(equal(splitter("a|bc|def", '|'), [ "a", "bc", "def" ]));
-
-    int[] a = [1, 0, 2, 3, 0, 4, 5, 6];
-    int[][] w = [ [1], [2, 3], [4, 5, 6] ];
-    assert(equal(splitter(a, 0), w));
-
-    // Adjacent separators.
-    assert(equal(splitter("a|b||c", '|'), [ "a", "b", "", "c" ]));
-    assert(equal(splitter("hello  world", ' '), [ "hello", "", "world" ]));
-
-    a = [ 1, 2, 0, 0, 3, 0, 4, 5, 0 ];
-    w = [ [1, 2], [], [3], [4, 5], [] ];
-    assert(equal(splitter(a, 0), w));
-
-    // Empty and separator-only ranges.
-    assert(splitter("", '|').empty);
-    assert(equal(splitter("|", '|'), [ "", "" ]));
-    assert(equal(splitter("||", '|'), [ "", "", "" ]));
-
-    // Leading separators, trailing separators, or no separators.
-    assert(equal(splitter("|ab|", '|'), [ "", "ab", "" ]));
-    assert(equal(splitter("ab", '|'), [ "ab" ]));
-
-    // Predicate functions.
-    assert(equal(splitter!"a.toLower == b"("abXcdxef", 'x'),
+    assert("abXcdxef".splitter!"a.toLower == b"('x').equal(
                  [ "ab", "cd", "ef" ]));
 
-    w = [ [0], [1], [2] ];
-    assert(equal(splitter!"a.front == b"(w, 1), [ [[0]], [[2]] ]));
+    auto w = [ [0], [1], [2] ];
+    assert(w.splitter!"a.front == b"(1).equal([ [[0]], [[2]] ]));
+}
 
-    // Bidirectional ranges.
-    assert(equal(splitter("a|bc|def", '|').retro, [ "def", "bc", "a" ]));
+/// Use splitter without a separator
+@safe unittest
+{
+    import std.algorithm.comparison : equal;
+    import std.range.primitives : front;
+
+    assert(equal(splitter!(a => a == '|')("a|bc|def"), [ "a", "bc", "def" ]));
+    assert(equal(splitter!(a => a == ' ')("hello  world"), [ "hello", "", "world" ]));
+
+    int[] a = [ 1, 2, 0, 0, 3, 0, 4, 5, 0 ];
+    int[][] w = [ [1, 2], [], [3], [4, 5], [] ];
+    assert(equal(splitter!(a => a == 0)(a), w));
+
+    a = [ 0 ];
+    assert(equal(splitter!(a => a == 0)(a), [ (int[]).init, (int[]).init ]));
+
+    a = [ 0, 1 ];
+    assert(equal(splitter!(a => a == 0)(a), [ [], [1] ]));
+
+    w = [ [0], [1], [2] ];
+    assert(equal(splitter!(a => a.front == 1)(w), [ [[0]], [[2]] ]));
+}
+
+/// Leading separators, trailing separators, or no separators.
+@safe unittest
+{
+    import std.algorithm.comparison : equal;
+
+    assert("|ab|".splitter('|').equal([ "", "ab", "" ]));
+    assert("ab".splitter('|').equal([ "ab" ]));
+}
+
+/// Splitter returns bidirectional ranges if the delimiter is a single element
+@safe unittest
+{
+    import std.algorithm.comparison : equal;
+    import std.range : retro;
+    assert("a|bc|def".splitter('|').retro.equal([ "def", "bc", "a" ]));
+}
+
+/// Splitting by word lazily
+@safe unittest
+{
+    import std.ascii : isWhite;
+    import std.algorithm.comparison : equal;
+    import std.algorithm.iteration : splitter;
+
+    string str = "Hello World!";
+    assert(str.splitter!(isWhite).equal(["Hello", "World!"]));
 }
 
 @safe unittest
@@ -3967,39 +4058,7 @@ if (is(typeof(binaryFun!pred(r.front, s)) : bool)
     assert(s.empty);
 }
 
-/**
-Similar to the previous overload of `splitter`, except this one uses another
-range as a separator. This can be used with any narrow string type or sliceable
-range type, but is most popular with string types. The predicate is passed to
-$(REF binaryFun, std,functional), and can either accept a string, or any callable
-that can be executed via `pred(r.front, s.front)`.
-
-Two adjacent separators are considered to surround an empty element in
-the split range. Use `filter!(a => !a.empty)` on the result to compress
-empty elements.
-
-Unlike the previous overload of `splitter`, this one will not return a
-bidirectional range.
-
-Params:
-    pred = The predicate for comparing each element with the separator,
-        defaulting to `"a == b"`.
-    r = The $(REF_ALTTEXT input range, isInputRange, std,range,primitives) to be
-        split.
-    s = The $(REF_ALTTEXT forward range, isForwardRange, std,range,primitives) to
-        be treated as the separator between segments of `r` to be split.
-
-Constraints:
-    The predicate `pred` needs to accept an element of `r` and an
-    element of `s`.
-
-Returns:
-    An input range of the subranges of elements between separators. If `r`
-    is a forward range, the returned range will be a forward range.
-
-See_Also: $(REF _splitter, std,regex) for a version that splits using a regular
-expression defined separator.
- */
+/// ditto
 auto splitter(alias pred = "a == b", Range, Separator)(Range r, Separator s)
 if (is(typeof(binaryFun!pred(r.front, s.front)) : bool)
         && (hasSlicing!Range || isNarrowString!Range)
@@ -4016,8 +4075,6 @@ if (is(typeof(binaryFun!pred(r.front, s.front)) : bool)
         Separator _separator;
         // _frontLength == size_t.max means empty
         size_t _frontLength = size_t.max;
-        static if (isBidirectionalRange!Range)
-            size_t _backLength = size_t.max;
 
         @property auto separatorLength() { return _separator.length; }
 
@@ -4028,22 +4085,6 @@ if (is(typeof(binaryFun!pred(r.front, s.front)) : bool)
             // compute front length
             _frontLength = (_separator.empty) ? 1 :
                            _input.length - find!pred(_input, _separator).length;
-            static if (isBidirectionalRange!Range)
-                if (_frontLength == _input.length) _backLength = _frontLength;
-        }
-
-        void ensureBackLength()
-        {
-            static if (isBidirectionalRange!Range)
-                if (_backLength != _backLength.max) return;
-            assert(!_input.empty);
-            // compute back length
-            static if (isBidirectionalRange!Range && isBidirectionalRange!Separator)
-            {
-                import std.range : retro;
-                _backLength = _input.length -
-                    find!pred(retro(_input), retro(_separator)).source.length;
-            }
         }
 
     public:
@@ -4081,8 +4122,6 @@ if (is(typeof(binaryFun!pred(r.front, s.front)) : bool)
                 // done, there's no separator in sight
                 _input = _input[_frontLength .. _frontLength];
                 _frontLength = _frontLength.max;
-                static if (isBidirectionalRange!Range)
-                    _backLength = _backLength.max;
                 return;
             }
             if (_frontLength + separatorLength == _input.length)
@@ -4091,8 +4130,6 @@ if (is(typeof(binaryFun!pred(r.front, s.front)) : bool)
                 // an empty item right after this.
                 _input = _input[_input.length .. _input.length];
                 _frontLength = 0;
-                static if (isBidirectionalRange!Range)
-                    _backLength = 0;
                 return;
             }
             // Normal case, pop one item and the separator, get ready for
@@ -4114,26 +4151,6 @@ if (is(typeof(binaryFun!pred(r.front, s.front)) : bool)
     }
 
     return Result(r, s);
-}
-
-///
-@safe unittest
-{
-    import std.algorithm.comparison : equal;
-
-    assert(equal(splitter("a=>bc=>def", "=>"), [ "a", "bc", "def" ]));
-    assert(equal(splitter("a|b||c", "||"), [ "a|b", "c" ]));
-    assert(equal(splitter("hello  world", "  "), [ "hello", "world" ]));
-
-    int[] a = [ 1, 2, 0, 0, 3, 0, 4, 5, 0 ];
-    int[][] w = [ [1, 2], [3, 0, 4, 5, 0] ];
-    assert(equal(splitter(a, [0, 0]), w));
-
-    a = [ 0, 0 ];
-    assert(equal(splitter(a, [0, 0]), [ (int[]).init, (int[]).init ]));
-
-    a = [ 0, 0, 1 ];
-    assert(equal(splitter(a, [0, 0]), [ [], [1] ]));
 }
 
 @safe unittest
@@ -4170,15 +4187,6 @@ if (is(typeof(binaryFun!pred(r.front, s.front)) : bool)
         assert(e == w[i++]);
     }
     assert(i == w.length);
-    // // Now go back
-    // auto s2 = splitter(a, 0);
-
-    // foreach (e; retro(s2))
-    // {
-    //     assert(i > 0);
-    //     assert(equal(e, w[--i]), text(e));
-    // }
-    // assert(i == 0);
 
     wstring names = ",peter,paul,jerry,";
     auto words = split(names, ",");
@@ -4237,60 +4245,11 @@ if (is(typeof(binaryFun!pred(r.front, s.front)) : bool)
     assert(words.equal([ "i", "am", "pointing" ]));
 }
 
-/**
-
-Similar to the previous overload of `splitter`, except this one does not use a separator.
-Instead, the predicate is an unary function on the input range's element type.
-The `isTerminator` predicate is passed to $(REF unaryFun, std,functional) and can
-either accept a string, or any callable that can be executed via `pred(element, s)`.
-
-Two adjacent separators are considered to surround an empty element in
-the split range. Use `filter!(a => !a.empty)` on the result to compress
-empty elements.
-
-Params:
-    isTerminator = The predicate for deciding where to split the range.
-    input = The $(REF_ALTTEXT input range, isInputRange, std,range,primitives) to
-        be split.
-
-Constraints:
-    The predicate `isTerminator` needs to accept an element of `input`.
-
-Returns:
-    An input range of the subranges of elements between separators. If `input`
-    is a forward range or $(REF_ALTTEXT bidirectional range, isBidirectionalRange, std,range,primitives),
-    the returned range will be likewise.
-
-See_Also: $(REF _splitter, std,regex) for a version that splits using a regular
-expression defined separator.
- */
-auto splitter(alias isTerminator, Range)(Range input)
-if (isForwardRange!Range && is(typeof(unaryFun!isTerminator(input.front))))
+/// ditto
+auto splitter(alias isTerminator, Range)(Range r)
+if (isForwardRange!Range && is(typeof(unaryFun!isTerminator(r.front))))
 {
-    return SplitterResult!(unaryFun!isTerminator, Range)(input);
-}
-
-///
-@safe unittest
-{
-    import std.algorithm.comparison : equal;
-    import std.range.primitives : front;
-
-    assert(equal(splitter!(a => a == '|')("a|bc|def"), [ "a", "bc", "def" ]));
-    assert(equal(splitter!(a => a == ' ')("hello  world"), [ "hello", "", "world" ]));
-
-    int[] a = [ 1, 2, 0, 0, 3, 0, 4, 5, 0 ];
-    int[][] w = [ [1, 2], [], [3], [4, 5], [] ];
-    assert(equal(splitter!(a => a == 0)(a), w));
-
-    a = [ 0 ];
-    assert(equal(splitter!(a => a == 0)(a), [ (int[]).init, (int[]).init ]));
-
-    a = [ 0, 1 ];
-    assert(equal(splitter!(a => a == 0)(a), [ [], [1] ]));
-
-    w = [ [0], [1], [2] ];
-    assert(equal(splitter!(a => a.front == 1)(w), [ [[0]], [[2]] ]));
+    return SplitterResult!(unaryFun!isTerminator, Range)(r);
 }
 
 private struct SplitterResult(alias isTerminator, Range)
@@ -4689,6 +4648,47 @@ if (isSomeChar!C)
     }
 }
 
+// In same combinations substitute needs to calculate the auto-decoded length
+// of its needles
+private template hasDifferentAutodecoding(Range, Needles...)
+{
+    import std.meta : anySatisfy;
+    /* iff
+       - the needles needs auto-decoding, but the incoming range doesn't (or vice versa)
+       - both (range, needle) need auto-decoding and don't share the same common type
+    */
+    enum needlesAreNarrow = anySatisfy!(isNarrowString, Needles);
+    enum sourceIsNarrow = isNarrowString!Range;
+    enum hasDifferentAutodecoding = sourceIsNarrow != needlesAreNarrow ||
+                                    (sourceIsNarrow && needlesAreNarrow &&
+                                    is(CommonType!(Range, Needles) == void));
+}
+
+@safe nothrow @nogc pure unittest
+{
+    import std.meta : AliasSeq; // used for better clarity
+
+    static assert(!hasDifferentAutodecoding!(string, AliasSeq!(string, string)));
+    static assert(!hasDifferentAutodecoding!(wstring, AliasSeq!(wstring, wstring)));
+    static assert(!hasDifferentAutodecoding!(dstring, AliasSeq!(dstring, dstring)));
+
+    // the needles needs auto-decoding, but the incoming range doesn't (or vice versa)
+    static assert(hasDifferentAutodecoding!(string, AliasSeq!(wstring, wstring)));
+    static assert(hasDifferentAutodecoding!(string, AliasSeq!(dstring, dstring)));
+    static assert(hasDifferentAutodecoding!(wstring, AliasSeq!(string, string)));
+    static assert(hasDifferentAutodecoding!(wstring, AliasSeq!(dstring, dstring)));
+    static assert(hasDifferentAutodecoding!(dstring, AliasSeq!(string, string)));
+    static assert(hasDifferentAutodecoding!(dstring, AliasSeq!(wstring, wstring)));
+
+    // both (range, needle) need auto-decoding and don't share the same common type
+    static foreach (T; AliasSeq!(string, wstring, dstring))
+    {
+        static assert(hasDifferentAutodecoding!(T, AliasSeq!(wstring, string)));
+        static assert(hasDifferentAutodecoding!(T, AliasSeq!(dstring, string)));
+        static assert(hasDifferentAutodecoding!(T, AliasSeq!(wstring, dstring)));
+    }
+}
+
 // substitute
 /**
 Returns a range with all occurrences of `substs` in `r`.
@@ -4731,14 +4731,16 @@ if (substs.length >= 2 && isExpressions!substs)
                 // Substitute single range elements with compile-time substitution mappings
                 return value.map!(a => substitute(a));
             }
-            else static if (isInputRange!Value && !is(CommonType!(ElementType!Value, ElementType!(typeof(substs[0]))) == void))
+            else static if (isInputRange!Value &&
+                    !is(CommonType!(ElementType!Value, ElementType!(typeof(substs[0]))) == void))
             {
                 // not implemented yet, fallback to runtime variant for now
                 return .substitute(value, substs);
             }
             else
             {
-                static assert(0, "Compile-time substitutions must be elements or ranges of the same type of ` ~ Value.stringof ~ `.");
+                static assert(0, `Compile-time substitutions must be elements or ranges of the same type of ` ~
+                    Value.stringof ~ `.`);
             }
         }
         // Substitute single values with compile-time substitution mappings.
@@ -4753,47 +4755,6 @@ if (substs.length >= 2 && isExpressions!substs)
                 default: return value;
             }
         }
-    }
-}
-
-// In same combinations substitute needs to calculate the auto-decoded length
-// of its needles
-private template hasDifferentAutodecoding(Range, Needles...)
-{
-    import std.meta : anySatisfy;
-    /* iff
-       - the needles needs auto-decoding, but the incoming range doesn't (or vice versa)
-       - both (range, needle) need auto-decoding and don't share the same common type
-    */
-    enum needlesAreNarrow = anySatisfy!(isNarrowString, Needles);
-    enum sourceIsNarrow = isNarrowString!Range;
-    enum hasDifferentAutodecoding = sourceIsNarrow != needlesAreNarrow ||
-                                    (sourceIsNarrow && needlesAreNarrow &&
-                                    is(CommonType!(Range, Needles) == void));
-}
-
-@safe nothrow @nogc pure unittest
-{
-    import std.meta : AliasSeq; // used for better clarity
-
-    static assert(!hasDifferentAutodecoding!(string, AliasSeq!(string, string)));
-    static assert(!hasDifferentAutodecoding!(wstring, AliasSeq!(wstring, wstring)));
-    static assert(!hasDifferentAutodecoding!(dstring, AliasSeq!(dstring, dstring)));
-
-    // the needles needs auto-decoding, but the incoming range doesn't (or vice versa)
-    static assert(hasDifferentAutodecoding!(string, AliasSeq!(wstring, wstring)));
-    static assert(hasDifferentAutodecoding!(string, AliasSeq!(dstring, dstring)));
-    static assert(hasDifferentAutodecoding!(wstring, AliasSeq!(string, string)));
-    static assert(hasDifferentAutodecoding!(wstring, AliasSeq!(dstring, dstring)));
-    static assert(hasDifferentAutodecoding!(dstring, AliasSeq!(string, string)));
-    static assert(hasDifferentAutodecoding!(dstring, AliasSeq!(wstring, wstring)));
-
-    // both (range, needle) need auto-decoding and don't share the same common type
-    static foreach (T; AliasSeq!(string, wstring, dstring))
-    {
-        static assert(hasDifferentAutodecoding!(T, AliasSeq!(wstring, string)));
-        static assert(hasDifferentAutodecoding!(T, AliasSeq!(dstring, string)));
-        static assert(hasDifferentAutodecoding!(T, AliasSeq!(wstring, dstring)));
     }
 }
 

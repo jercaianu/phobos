@@ -221,9 +221,10 @@ Source: $(PHOBOSSRC std/_range/_package.d)
 
 License: $(HTTP boost.org/LICENSE_1_0.txt, Boost License 1.0).
 
-Authors: $(HTTP erdani.com, Andrei Alexandrescu), David Simcha, Jonathan M Davis,
-and Jack Stouffer. Credit for some of the ideas in building this module goes
-to $(HTTP fantascienza.net/leonardo/so/, Leonardo Maffi).
+Authors: $(HTTP erdani.com, Andrei Alexandrescu), David Simcha,
+         $(HTTP jmdavisprog.com, Jonathan M Davis), and Jack Stouffer. Credit
+         for some of the ideas in building this module goes to
+         $(HTTP fantascienza.net/leonardo/so/, Leonardo Maffi).
  */
 module std.range;
 
@@ -2545,7 +2546,7 @@ pure @safe nothrow unittest
 
 // https://issues.dlang.org/show_bug.cgi?id=18092
 // can't combine take and takeExactly
-unittest
+@safe unittest
 {
     import std.algorithm.comparison : equal;
     import std.internal.test.dummyrange : AllDummyRanges;
@@ -4166,7 +4167,7 @@ if (Ranges.length && allSatisfy!(isInputRange, Ranges))
             {
                 //TODO: Fixme! BackElement != back of all ranges in case of jagged-ness
 
-                @property tryMoveBack(size_t i)(){return ranges[i].empty ? tryGetInit!i() : ranges[i].moveFront();}
+                @property tryMoveBack(size_t i)(){return ranges[i].empty ? tryGetInit!i() : ranges[i].moveBack();}
                 //ElementType(tryMoveBack!0, tryMoveBack!1, ...)
                 return mixin(q{ElementType(%(tryMoveBack!%s, %))}.format(iota(0, R.length)));
             }
@@ -4517,6 +4518,13 @@ pure @system unittest
     // BUG 8900
     assert(zip([1, 2], repeat('a')).array == [tuple(1, 'a'), tuple(2, 'a')]);
     assert(zip(repeat('a'), [1, 2]).array == [tuple('a', 1), tuple('a', 2)]);
+
+    // Issue 18524 - moveBack instead performs moveFront
+    {
+        auto r = zip([1,2,3]);
+        assert(r.moveBack()[0] == 3);
+        assert(r.moveFront()[0] == 1);
+    }
 
     // Doesn't work yet.  Issues w/ emplace.
     // static assert(is(Zip!(immutable int[], immutable float[])));
@@ -8475,7 +8483,7 @@ public:
         assert(3.iota.slide!(Partial)(4, 3).walkLength == expectedLength);
     }}
 
-    enum list = [
+    static immutable list = [
     //  iota   slide    expected
         [4,    2, 1,     3, 3],
         [5,    3, 1,     3, 3],
@@ -8637,7 +8645,7 @@ public:
     import std.typecons : tuple;
 
     alias t = tuple;
-    enum list = [
+    static immutable list = [
     // iota   slide    expected
         t(6,  t(4, 2), [[1, 2, 3, 4], [3, 4, 5, 6]]),
         t(6,  t(4, 6), [[1, 2, 3, 4]]),
@@ -8655,7 +8663,7 @@ public:
     foreach (e; list)
         assert(Range().take(e[0]).slide!Partial(e[1].expand).equal!equal(e[2]));
 
-    enum listSpecial = [
+    static immutable listSpecial = [
     // iota   slide    expected
         t(6,  t(4, 3), [[1, 2, 3, 4], [4, 5, 6]]),
         t(7,  t(4, 5), [[1, 2, 3, 4], [6, 7]]),
@@ -8686,11 +8694,12 @@ public:
     import std.typecons : tuple;
     alias t = tuple;
 
-    enum list = [
+    static immutable list = [
     //   slide   expected
         t(1, 1, [[10], [9], [8], [7], [6], [5], [4], [3], [2], [1]]),
         t(2, 1, [[9, 10], [8, 9], [7, 8], [6, 7], [5, 6], [4, 5], [3, 4], [2, 3], [1, 2]]),
-        t(5, 1, [[6, 7, 8, 9, 10], [5, 6, 7, 8, 9], [4, 5, 6, 7, 8], [3, 4, 5, 6, 7], [2, 3, 4, 5, 6], [1, 2, 3, 4, 5]]),
+        t(5, 1, [[6, 7, 8, 9, 10], [5, 6, 7, 8, 9], [4, 5, 6, 7, 8],
+                 [3, 4, 5, 6, 7], [2, 3, 4, 5, 6], [1, 2, 3, 4, 5]]),
         t(2, 2, [[9, 10], [7, 8], [5, 6], [3, 4], [1, 2]]),
         t(2, 4, [[9, 10], [5, 6], [1, 2]]),
     ];

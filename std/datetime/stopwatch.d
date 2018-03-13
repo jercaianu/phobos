@@ -42,7 +42,7 @@ $(TR $(TD Flags) $(TD
     rather than the deprecated ones from std.datetime.package.
 
     License:   $(HTTP www.boost.org/LICENSE_1_0.txt, Boost License 1.0).
-    Authors:   Jonathan M Davis and Kato Shoichi
+    Authors:   $(HTTP jmdavisprog.com, Jonathan M Davis) and Kato Shoichi
     Source:    $(PHOBOSSRC std/datetime/_stopwatch.d)
 +/
 module std.datetime.stopwatch;
@@ -81,55 +81,6 @@ alias AutoStart = Flag!"autoStart";
 struct StopWatch
 {
 public:
-
-    /// Measure a time in milliseconds, microseconds, or nanoseconds
-    @safe nothrow @nogc unittest
-    {
-        auto sw = StopWatch(AutoStart.no);
-        sw.start();
-        // ... Insert operations to be timed here ...
-        sw.stop();
-
-        long msecs = sw.peek.total!"msecs";
-        long usecs = sw.peek.total!"usecs";
-        long nsecs = sw.peek.total!"nsecs";
-
-        assert(usecs >= msecs * 1000);
-        assert(nsecs >= usecs * 1000);
-    }
-
-    ///
-    @system nothrow @nogc unittest
-    {
-        import core.thread : Thread;
-
-        auto sw = StopWatch(AutoStart.yes);
-
-        Duration t1 = sw.peek();
-        Thread.sleep(usecs(1));
-        Duration t2 = sw.peek();
-        assert(t2 > t1);
-
-        Thread.sleep(usecs(1));
-        sw.stop();
-
-        Duration t3 = sw.peek();
-        assert(t3 > t2);
-        Duration t4 = sw.peek();
-        assert(t3 == t4);
-
-        sw.start();
-        Thread.sleep(usecs(1));
-
-        Duration t5 = sw.peek();
-        assert(t5 > t4);
-
-        // If stopping or resetting the StopWatch is not required, then
-        // MonoTime can easily be used by itself without StopWatch.
-        auto before = MonoTime.currTime;
-        // do stuff...
-        auto timeElapsed = MonoTime.currTime - before;
-    }
 
     /++
         Constructs a StopWatch. Whether it starts immediately depends on the
@@ -393,6 +344,55 @@ private:
     long _ticksElapsed;    // Total time that the StopWatch ran before it was stopped last.
 }
 
+/// Measure a time in milliseconds, microseconds, or nanoseconds
+@safe nothrow @nogc unittest
+{
+    auto sw = StopWatch(AutoStart.no);
+    sw.start();
+    // ... Insert operations to be timed here ...
+    sw.stop();
+
+    long msecs = sw.peek.total!"msecs";
+    long usecs = sw.peek.total!"usecs";
+    long nsecs = sw.peek.total!"nsecs";
+
+    assert(usecs >= msecs * 1000);
+    assert(nsecs >= usecs * 1000);
+}
+
+///
+@system nothrow @nogc unittest
+{
+    import core.thread : Thread;
+
+    auto sw = StopWatch(AutoStart.yes);
+
+    Duration t1 = sw.peek();
+    Thread.sleep(usecs(1));
+    Duration t2 = sw.peek();
+    assert(t2 > t1);
+
+    Thread.sleep(usecs(1));
+    sw.stop();
+
+    Duration t3 = sw.peek();
+    assert(t3 > t2);
+    Duration t4 = sw.peek();
+    assert(t3 == t4);
+
+    sw.start();
+    Thread.sleep(usecs(1));
+
+    Duration t5 = sw.peek();
+    assert(t5 > t4);
+
+    // If stopping or resetting the StopWatch is not required, then
+    // MonoTime can easily be used by itself without StopWatch.
+    auto before = MonoTime.currTime;
+    // do stuff...
+    auto timeElapsed = MonoTime.currTime - before;
+}
+
 
 /++
     Benchmarks code for speed assessment and comparison.
@@ -447,7 +447,7 @@ Duration[fun.length] benchmark(fun...)(uint n)
     void f0() nothrow {}
     void f1() nothrow { auto b = to!string(a); }
     auto r = benchmark!(f0, f1)(1000);
-    assert(r[0] > Duration.zero);
+    assert(r[0] >= Duration.zero);
     assert(r[1] > Duration.zero);
     assert(r[1] > r[0]);
     assert(r[0] < seconds(1));

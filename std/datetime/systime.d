@@ -26,7 +26,7 @@ $(TR $(TD Conversion) $(TD
 )
 
     License:   $(HTTP www.boost.org/LICENSE_1_0.txt, Boost License 1.0).
-    Authors:   Jonathan M Davis
+    Authors:   $(HTTP jmdavisprog.com, Jonathan M Davis)
     Source:    $(PHOBOSSRC std/datetime/_systime.d)
 +/
 module std.datetime.systime;
@@ -55,7 +55,7 @@ else version(Posix)
     import core.sys.posix.sys.types : time_t;
 }
 
-version(StdUnittest)
+version(unittest)
 {
     import core.exception : AssertError;
     import std.exception : assertThrown;
@@ -7636,45 +7636,67 @@ public:
             writing out the result of toISOString to read in later will continue
             to work. The current behavior will be kept until July 2019 at which
             point, fromISOString will be fixed to be standards compliant.)
+
+        Params:
+            writer = A `char` accepting
+            $(REF_ALTTEXT output range, isOutputRange, std, range, primitives)
+        Returns:
+            A `string` when not using an output range; `void` otherwise.
       +/
     string toISOString() @safe const nothrow
     {
+        import std.array : appender;
+        auto app = appender!string();
+        app.reserve(30);
         try
-        {
-            immutable adjustedTime = adjTime;
-            long hnsecs = adjustedTime;
-
-            auto days = splitUnitsFromHNSecs!"days"(hnsecs) + 1;
-
-            if (hnsecs < 0)
-            {
-                hnsecs += convert!("hours", "hnsecs")(24);
-                --days;
-            }
-
-            auto hour = splitUnitsFromHNSecs!"hours"(hnsecs);
-            auto minute = splitUnitsFromHNSecs!"minutes"(hnsecs);
-            auto second = splitUnitsFromHNSecs!"seconds"(hnsecs);
-
-            auto dateTime = DateTime(Date(cast(int) days), TimeOfDay(cast(int) hour,
-                                          cast(int) minute, cast(int) second));
-            auto fracSecStr = fracSecsToISOString(cast(int) hnsecs);
-
-            if (_timezone is LocalTime())
-                return dateTime.toISOString() ~ fracSecStr;
-
-            if (_timezone is UTC())
-                return dateTime.toISOString() ~ fracSecStr ~ "Z";
-
-            immutable utcOffset = dur!"hnsecs"(adjustedTime - stdTime);
-
-            return format("%s%s%s",
-                          dateTime.toISOString(),
-                          fracSecStr,
-                          SimpleTimeZone.toISOExtString(utcOffset));
-        }
+            toISOString(app);
         catch (Exception e)
-            assert(0, "format() threw.");
+            assert(0, "toISOString() threw.");
+        return app.data;
+    }
+
+    /// ditto
+    void toISOString(W)(ref W writer) const
+    if (isOutputRange!(W, char))
+    {
+        immutable adjustedTime = adjTime;
+        long hnsecs = adjustedTime;
+
+        auto days = splitUnitsFromHNSecs!"days"(hnsecs) + 1;
+
+        if (hnsecs < 0)
+        {
+            hnsecs += convert!("hours", "hnsecs")(24);
+            --days;
+        }
+
+        immutable hour = splitUnitsFromHNSecs!"hours"(hnsecs);
+        immutable minute = splitUnitsFromHNSecs!"minutes"(hnsecs);
+        immutable second = splitUnitsFromHNSecs!"seconds"(hnsecs);
+
+        auto dateTime = DateTime(Date(cast(int) days), TimeOfDay(cast(int) hour,
+                                      cast(int) minute, cast(int) second));
+
+        if (_timezone is LocalTime())
+        {
+            dateTime.toISOString(writer);
+            fracSecsToISOString(writer, cast(int) hnsecs);
+            return;
+        }
+
+        if (_timezone is UTC())
+        {
+            dateTime.toISOString(writer);
+            fracSecsToISOString(writer, cast(int) hnsecs);
+            put(writer, 'Z');
+            return;
+        }
+
+        immutable utcOffset = dur!"hnsecs"(adjustedTime - stdTime);
+
+        dateTime.toISOString(writer);
+        fracSecsToISOString(writer, cast(int) hnsecs);
+        SimpleTimeZone.toISOExtString(writer, utcOffset);
     }
 
     ///
@@ -7769,45 +7791,67 @@ public:
         enough to uniquely identify the time zone.
 
         Time zone offsets will be in the form +HH:MM or -HH:MM.
+
+        Params:
+            writer = A `char` accepting
+            $(REF_ALTTEXT output range, isOutputRange, std, range, primitives)
+        Returns:
+            A `string` when not using an output range; `void` otherwise.
       +/
     string toISOExtString() @safe const nothrow
     {
+        import std.array : appender;
+        auto app = appender!string();
+        app.reserve(35);
         try
-        {
-            immutable adjustedTime = adjTime;
-            long hnsecs = adjustedTime;
-
-            auto days = splitUnitsFromHNSecs!"days"(hnsecs) + 1;
-
-            if (hnsecs < 0)
-            {
-                hnsecs += convert!("hours", "hnsecs")(24);
-                --days;
-            }
-
-            auto hour = splitUnitsFromHNSecs!"hours"(hnsecs);
-            auto minute = splitUnitsFromHNSecs!"minutes"(hnsecs);
-            auto second = splitUnitsFromHNSecs!"seconds"(hnsecs);
-
-            auto dateTime = DateTime(Date(cast(int) days), TimeOfDay(cast(int) hour,
-                                          cast(int) minute, cast(int) second));
-            auto fracSecStr = fracSecsToISOString(cast(int) hnsecs);
-
-            if (_timezone is LocalTime())
-                return dateTime.toISOExtString() ~ fracSecStr;
-
-            if (_timezone is UTC())
-                return dateTime.toISOExtString() ~ fracSecStr ~ "Z";
-
-            immutable utcOffset = dur!"hnsecs"(adjustedTime - stdTime);
-
-            return format("%s%s%s",
-                          dateTime.toISOExtString(),
-                          fracSecStr,
-                          SimpleTimeZone.toISOExtString(utcOffset));
-        }
+            toISOExtString(app);
         catch (Exception e)
-            assert(0, "format() threw.");
+            assert(0, "toISOExtString() threw.");
+        return app.data;
+    }
+
+    /// ditto
+    void toISOExtString(W)(ref W writer) const
+    if (isOutputRange!(W, char))
+    {
+        immutable adjustedTime = adjTime;
+        long hnsecs = adjustedTime;
+
+        auto days = splitUnitsFromHNSecs!"days"(hnsecs) + 1;
+
+        if (hnsecs < 0)
+        {
+            hnsecs += convert!("hours", "hnsecs")(24);
+            --days;
+        }
+
+        immutable hour = splitUnitsFromHNSecs!"hours"(hnsecs);
+        immutable minute = splitUnitsFromHNSecs!"minutes"(hnsecs);
+        immutable second = splitUnitsFromHNSecs!"seconds"(hnsecs);
+
+        immutable dateTime = DateTime(Date(cast(int) days), TimeOfDay(cast(int) hour,
+                                      cast(int) minute, cast(int) second));
+
+        if (_timezone is LocalTime())
+        {
+            dateTime.toISOExtString(writer);
+            fracSecsToISOString(writer, cast(int) hnsecs);
+            return;
+        }
+
+        if (_timezone is UTC())
+        {
+            dateTime.toISOExtString(writer);
+            fracSecsToISOString(writer, cast(int) hnsecs);
+            put(writer, 'Z');
+            return;
+        }
+
+        immutable utcOffset = dur!"hnsecs"(adjustedTime - stdTime);
+
+        dateTime.toISOExtString(writer);
+        fracSecsToISOString(writer, cast(int) hnsecs);
+        SimpleTimeZone.toISOExtString(writer, utcOffset);
     }
 
     ///
@@ -7906,45 +7950,67 @@ public:
         enough to uniquely identify the time zone.
 
         Time zone offsets will be in the form +HH:MM or -HH:MM.
+
+        Params:
+            writer = A `char` accepting
+            $(REF_ALTTEXT output range, isOutputRange, std, range, primitives)
+        Returns:
+            A `string` when not using an output range; `void` otherwise.
       +/
     string toSimpleString() @safe const nothrow
     {
+        import std.array : appender;
+        auto app = appender!string();
+        app.reserve(35);
         try
-        {
-            immutable adjustedTime = adjTime;
-            long hnsecs = adjustedTime;
-
-            auto days = splitUnitsFromHNSecs!"days"(hnsecs) + 1;
-
-            if (hnsecs < 0)
-            {
-                hnsecs += convert!("hours", "hnsecs")(24);
-                --days;
-            }
-
-            auto hour = splitUnitsFromHNSecs!"hours"(hnsecs);
-            auto minute = splitUnitsFromHNSecs!"minutes"(hnsecs);
-            auto second = splitUnitsFromHNSecs!"seconds"(hnsecs);
-
-            auto dateTime = DateTime(Date(cast(int) days), TimeOfDay(cast(int) hour,
-                                          cast(int) minute, cast(int) second));
-            auto fracSecStr = fracSecsToISOString(cast(int) hnsecs);
-
-            if (_timezone is LocalTime())
-                return dateTime.toSimpleString() ~ fracSecStr;
-
-            if (_timezone is UTC())
-                return dateTime.toSimpleString() ~ fracSecStr ~ "Z";
-
-            immutable utcOffset = dur!"hnsecs"(adjustedTime - stdTime);
-
-            return format("%s%s%s",
-                          dateTime.toSimpleString(),
-                          fracSecStr,
-                          SimpleTimeZone.toISOExtString(utcOffset));
-        }
+            toSimpleString(app);
         catch (Exception e)
-            assert(0, "format() threw.");
+            assert(0, "toSimpleString() threw.");
+        return app.data;
+    }
+
+    /// ditto
+    void toSimpleString(W)(ref W writer) const
+    if (isOutputRange!(W, char))
+    {
+        immutable adjustedTime = adjTime;
+        long hnsecs = adjustedTime;
+
+        auto days = splitUnitsFromHNSecs!"days"(hnsecs) + 1;
+
+        if (hnsecs < 0)
+        {
+            hnsecs += convert!("hours", "hnsecs")(24);
+            --days;
+        }
+
+        immutable hour = splitUnitsFromHNSecs!"hours"(hnsecs);
+        immutable minute = splitUnitsFromHNSecs!"minutes"(hnsecs);
+        immutable second = splitUnitsFromHNSecs!"seconds"(hnsecs);
+
+        immutable dateTime = DateTime(Date(cast(int) days), TimeOfDay(cast(int) hour,
+                                      cast(int) minute, cast(int) second));
+
+        if (_timezone is LocalTime())
+        {
+            dateTime.toSimpleString(writer);
+            fracSecsToISOString(writer, cast(int) hnsecs);
+            return;
+        }
+
+        if (_timezone is UTC())
+        {
+            dateTime.toSimpleString(writer);
+            fracSecsToISOString(writer, cast(int) hnsecs);
+            put(writer, 'Z');
+            return;
+        }
+
+        immutable utcOffset = dur!"hnsecs"(adjustedTime - stdTime);
+
+        dateTime.toSimpleString(writer);
+        fracSecsToISOString(writer, cast(int) hnsecs);
+        SimpleTimeZone.toISOExtString(writer, utcOffset);
     }
 
     ///
@@ -8049,10 +8115,23 @@ public:
         `fromISOString`, `fromISOExtString`, and `fromSimpleString`.
 
         The format returned by toString may or may not change in the future.
+
+        Params:
+            writer = A `char` accepting
+            $(REF_ALTTEXT output range, isOutputRange, std, range, primitives)
+        Returns:
+            A `string` when not using an output range; `void` otherwise.
       +/
     string toString() @safe const nothrow
     {
         return toSimpleString();
+    }
+
+    /// ditto
+    void toString(W)(ref W writer) const
+    if (isOutputRange!(W, char))
+    {
+        toSimpleString(writer);
     }
 
     @safe unittest
@@ -8414,18 +8493,18 @@ public:
     {
         import std.algorithm.searching : countUntil, find;
         import std.conv : to;
-        import std.string : strip;
+        import std.string : strip, indexOf;
 
-        auto dstr = to!dstring(strip(isoExtString));
+        auto str = strip(isoExtString);
 
-        auto tIndex = dstr.countUntil('T');
+        auto tIndex = str.indexOf('T');
         enforce(tIndex != -1, new DateTimeException(format("Invalid ISO Extended String: %s", isoExtString)));
 
-        auto found = dstr[tIndex + 1 .. $].find('.', 'Z', '+', '-');
-        auto dateTimeStr = dstr[0 .. $ - found[0].length];
+        auto found = str[tIndex + 1 .. $].find('.', 'Z', '+', '-');
+        auto dateTimeStr = str[0 .. $ - found[0].length];
 
-        dstring fracSecStr;
-        dstring zoneStr;
+        typeof(str) fracSecStr;
+        typeof(str) zoneStr;
 
         if (found[1] != 0)
         {
@@ -8655,20 +8734,20 @@ public:
     static SysTime fromSimpleString(S)(in S simpleString, immutable TimeZone tz = null) @safe
         if (isSomeString!(S))
     {
-        import std.algorithm.searching : countUntil, find;
+        import std.algorithm.searching : find;
         import std.conv : to;
-        import std.string : strip;
+        import std.string : strip, indexOf;
 
-        auto dstr = to!dstring(strip(simpleString));
+        auto str = strip(simpleString);
 
-        auto spaceIndex = dstr.countUntil(' ');
+        auto spaceIndex = str.indexOf(' ');
         enforce(spaceIndex != -1, new DateTimeException(format("Invalid Simple String: %s", simpleString)));
 
-        auto found = dstr[spaceIndex + 1 .. $].find('.', 'Z', '+', '-');
-        auto dateTimeStr = dstr[0 .. $ - found[0].length];
+        auto found = str[spaceIndex + 1 .. $].find('.', 'Z', '+', '-');
+        auto dateTimeStr = str[0 .. $ - found[0].length];
 
-        dstring fracSecStr;
-        dstring zoneStr;
+        typeof(str) fracSecStr;
+        typeof(str) zoneStr;
 
         if (found[1] != 0)
         {
@@ -8902,7 +8981,7 @@ private:
     /+
         Returns $(D stdTime) converted to $(LREF SysTime)'s time zone.
       +/
-    @property long adjTime() @safe const nothrow
+    @property long adjTime() @safe const nothrow scope
     {
         return _timezone.utcToTZ(_stdTime);
     }
@@ -8911,7 +8990,7 @@ private:
     /+
         Converts the given hnsecs from $(LREF SysTime)'s time zone to std time.
       +/
-    @property void adjTime(long adjTime) @safe nothrow
+    @property void adjTime(long adjTime) @safe nothrow scope
     {
         _stdTime = _timezone.tzToUTC(adjTime);
     }
@@ -9749,7 +9828,7 @@ afterMon: stripAndCheckLen(value[3 .. value.length], "1200:00A".length);
     assertThrown!DateTimeException(parseRFC822DateTime(badStr));
 }
 
-version(StdUnittest) void testParse822(alias cr)(string str, SysTime expected, size_t line = __LINE__)
+version(unittest) void testParse822(alias cr)(string str, SysTime expected, size_t line = __LINE__)
 {
     import std.format : format;
     auto value = cr(str);
@@ -9758,7 +9837,7 @@ version(StdUnittest) void testParse822(alias cr)(string str, SysTime expected, s
         throw new AssertError(format("wrong result. expected [%s], actual[%s]", expected, result), __FILE__, line);
 }
 
-version(StdUnittest) void testBadParse822(alias cr)(string str, size_t line = __LINE__)
+version(unittest) void testBadParse822(alias cr)(string str, size_t line = __LINE__)
 {
     try
         parseRFC822DateTime(cr(str));
@@ -10263,24 +10342,32 @@ private:
 /+
     Returns the given hnsecs as an ISO string of fractional seconds.
   +/
-static string fracSecsToISOString(int hnsecs) @safe pure nothrow
+string fracSecsToISOString(int hnsecs) @safe pure nothrow
 {
+    import std.array : appender;
+    auto w = appender!string();
+    try
+        fracSecsToISOString(w, hnsecs);
+    catch (Exception e)
+        assert(0, "fracSecsToISOString() threw.");
+    return w.data;
+}
+
+void fracSecsToISOString(W)(ref W writer, int hnsecs)
+{
+    import std.conv : toChars;
+    import std.range : padLeft;
+
     assert(hnsecs >= 0);
 
-    try
-    {
-        if (hnsecs == 0)
-            return "";
+    if (hnsecs == 0)
+        return;
 
-        string isoString = format(".%07d", hnsecs);
-
-        while (isoString[$ - 1] == '0')
-            isoString.popBack();
-
-        return isoString;
-    }
-    catch (Exception e)
-        assert(0, "format() threw.");
+    put(writer, '.');
+    auto chars = hnsecs.toChars.padLeft('0', 7);
+    while (chars.back == '0')
+        chars.popBack();
+    put(writer, chars);
 }
 
 @safe unittest
@@ -10322,7 +10409,6 @@ if (isSomeString!S)
     import std.ascii : isDigit;
     import std.conv : to;
     import std.string : representation;
-    import core.time;
 
     if (isoString.empty)
         return Duration.zero;
@@ -10686,7 +10772,7 @@ if (isIntegral!T && isSigned!T) // The constraints on R were already covered by 
 }
 
 
-version(StdUnittest)
+version(unittest)
 {
     // Variables to help in testing.
     Duration currLocalDiffFromUTC;
@@ -10963,7 +11049,6 @@ version(StdUnittest)
 
     void initializeTests() @safe
     {
-        import core.time;
         import std.algorithm.sorting : sort;
         import std.typecons : Rebindable;
         immutable lt = LocalTime().utcToTZ(0);

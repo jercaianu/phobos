@@ -82,7 +82,7 @@ class FormatException : Exception
     }
 }
 
-private alias enforceFmt = enforceEx!FormatException;
+private alias enforceFmt = enforce!FormatException;
 
 
 /**********************************************************************
@@ -1596,22 +1596,60 @@ if (is(Unqual!Char == Char))
         return w.data;
     }
 
-    string toString()
+    /**
+     * Gives a string containing all of the member variables on their own
+     * line.
+     *
+     * Params:
+     *     writer = A `char` accepting
+     *     $(REF_ALTTEXT output range, isOutputRange, std, range, primitives)
+     * Returns:
+     *     A `string` when not using an output range; `void` otherwise.
+     */
+    string toString() const @safe pure
     {
-        return text("address = ", cast(void*) &this,
-                "\nwidth = ", width,
-                "\nprecision = ", precision,
-                "\nspec = ", spec,
-                "\nindexStart = ", indexStart,
-                "\nindexEnd = ", indexEnd,
-                "\nflDash = ", flDash,
-                "\nflZero = ", flZero,
-                "\nflSpace = ", flSpace,
-                "\nflPlus = ", flPlus,
-                "\nflHash = ", flHash,
-                "\nflSeparator = ", flSeparator,
-                "\nnested = ", nested,
-                "\ntrailing = ", trailing, "\n");
+        import std.array : appender;
+        auto app = appender!string();
+        app.reserve(200 + trailing.length);
+        toString(app);
+        return app.data;
+    }
+
+    /// ditto
+    void toString(OutputRange)(ref OutputRange writer) const
+    if (isOutputRange!(OutputRange, char))
+    {
+        auto s = singleSpec("%s");
+
+        put(writer, "address = ");
+        formatValue(writer, &this, s);
+        put(writer, "\nwidth = ");
+        formatValue(writer, width, s);
+        put(writer, "\nprecision = ");
+        formatValue(writer, precision, s);
+        put(writer, "\nspec = ");
+        formatValue(writer, spec, s);
+        put(writer, "\nindexStart = ");
+        formatValue(writer, indexStart, s);
+        put(writer, "\nindexEnd = ");
+        formatValue(writer, indexEnd, s);
+        put(writer, "\nflDash = ");
+        formatValue(writer, flDash, s);
+        put(writer, "\nflZero = ");
+        formatValue(writer, flZero, s);
+        put(writer, "\nflSpace = ");
+        formatValue(writer, flSpace, s);
+        put(writer, "\nflPlus = ");
+        formatValue(writer, flPlus, s);
+        put(writer, "\nflHash = ");
+        formatValue(writer, flHash, s);
+        put(writer, "\nflSeparator = ");
+        formatValue(writer, flSeparator, s);
+        put(writer, "\nnested = ");
+        formatValue(writer, nested, s);
+        put(writer, "\ntrailing = ");
+        formatValue(writer, trailing, s);
+        put(writer, '\n');
     }
 }
 
@@ -1675,6 +1713,29 @@ if (is(Unqual!Char == Char))
     assert(f.separators == 10);
     assert(f.width == 5);
     assert(f.precision == 4);
+}
+
+@safe pure unittest
+{
+    import std.algorithm.searching : canFind, findSplitBefore;
+    auto expected = "width = 2" ~
+        "\nprecision = 5" ~
+        "\nspec = f" ~
+        "\nindexStart = 0" ~
+        "\nindexEnd = 0" ~
+        "\nflDash = false" ~
+        "\nflZero = false" ~
+        "\nflSpace = false" ~
+        "\nflPlus = false" ~
+        "\nflHash = false" ~
+        "\nflSeparator = false" ~
+        "\nnested = " ~
+        "\ntrailing = \n";
+    auto spec = singleSpec("%2.5f");
+    auto res = spec.toString();
+    // make sure the address exists, then skip it
+    assert(res.canFind("address"));
+    assert(res.findSplitBefore("width")[1] == expected);
 }
 
 /**
@@ -2537,13 +2598,14 @@ if (is(FloatingPointTypeOf!T) && !is(T == enum) && !hasToString!(T, Char))
 
     auto len = min(n, buf.length-1);
     ptrdiff_t dot = buf[0 .. len].indexOf('.');
-    if (fs.flSeparator && dot != -1)
+    if (fs.flSeparator)
     {
         ptrdiff_t firstDigit = buf[0 .. len].indexOfAny("0123456789");
         ptrdiff_t ePos = buf[0 .. len].indexOf('e');
+        auto dotIdx = dot == -1 ? ePos == -1 ? len : ePos : dot;
         size_t j;
 
-        ptrdiff_t firstLen = dot - firstDigit;
+        ptrdiff_t firstLen = dotIdx - firstDigit;
 
         size_t separatorScoreCnt = firstLen / fs.separators;
 
@@ -2580,12 +2642,17 @@ if (is(FloatingPointTypeOf!T) && !is(T == enum) && !hasToString!(T, Char))
             }
             put(w, buf[j + firstDigit]);
         }
-        put(w, '.');
+
+        // print dot for decimal numbers only or with '#' format specifier
+        if (dot != -1 || fs.flHash)
+        {
+            put(w, '.');
+        }
 
         // digits after dot
-        for (j = dot + 1; j < afterDotIdx; ++j)
+        for (j = dotIdx + 1; j < afterDotIdx; ++j)
         {
-            auto realJ = (j - (dot + 1));
+            auto realJ = (j - (dotIdx + 1));
             if (realJ != 0 && realJ % fs.separators == 0)
             {
                 put(w, fs.separatorChar);
@@ -2603,6 +2670,15 @@ if (is(FloatingPointTypeOf!T) && !is(T == enum) && !hasToString!(T, Char))
     {
         put(w, buf[0 .. len]);
     }
+}
+
+@safe unittest
+{
+    assert(format("%.1f", 1337.7) == "1337.7");
+    assert(format("%,3.2f", 1331.982) == "1,331.98");
+    assert(format("%,3.0f", 1303.1982) == "1,303");
+    assert(format("%#,3.4f", 1303.1982) == "1,303.198,2");
+    assert(format("%#,3.0f", 1303.1982) == "1,303.");
 }
 
 @safe /*pure*/ unittest     // formatting floating point values is now impure
@@ -3550,20 +3626,25 @@ private template hasToString(T, Char)
         enum hasToString = 0;
     }
     else static if (is(typeof(
-        {T val = void; FormatSpec!Char f; static struct S {void put(Char s){}}
-        S s; val.toString(s, f);
-        // force toString to take output range by ref
-        static assert(ParameterStorageClassTuple!(T.toString!(S))[0] == ParameterStorageClass.ref_);
-        static assert(ParameterStorageClassTuple!(T.toString!(S))[1] == ParameterStorageClass.ref_);
-        static assert(is(Parameters!(T.toString!(S))[1] == const));}
+        {T val = void;
+        const FormatSpec!Char f;
+        static struct S {void put(Char s){}}
+        S s;
+        val.toString(s, f);
+        // force toString to take parameters by ref
+        static assert(!__traits(compiles, val.toString(s, FormatSpec!Char())));
+        static assert(!__traits(compiles, val.toString(S(), f)));}
     )))
     {
         enum hasToString = 6;
     }
     else static if (is(typeof(
-        {T val = void; static struct S {void put(Char s){}}
-        S s; val.toString(s);
-        static assert(ParameterStorageClassTuple!(T.toString!(S))[0] == ParameterStorageClass.ref_);}
+        {T val = void;
+        static struct S {void put(Char s){}}
+        S s;
+        val.toString(s);
+        // force toString to take parameters by ref
+        static assert(!__traits(compiles, val.toString(S())));}
     )))
     {
         enum hasToString = 5;
@@ -3594,7 +3675,9 @@ private template hasToString(T, Char)
 {
     static struct A
     {
-        void toString(Writer)(ref Writer w) if (isOutputRange!(Writer, string)) {}
+        void toString(Writer)(ref Writer w)
+        if (isOutputRange!(Writer, string))
+        {}
     }
     static struct B
     {
@@ -3614,7 +3697,47 @@ private template hasToString(T, Char)
     }
     static struct F
     {
-        void toString(Writer)(ref Writer w, const ref FormatSpec!char fmt) if (isOutputRange!(Writer, string)) {}
+        void toString(Writer)(ref Writer w, const ref FormatSpec!char fmt)
+        if (isOutputRange!(Writer, string))
+        {}
+    }
+    static struct G
+    {
+        string toString() {return "";}
+        void toString(Writer)(ref Writer w) if (isOutputRange!(Writer, string)) {}
+    }
+    static struct H
+    {
+        string toString() {return "";}
+        void toString(Writer)(ref Writer w, const ref FormatSpec!char fmt)
+        if (isOutputRange!(Writer, string))
+        {}
+    }
+    static struct I
+    {
+        void toString(Writer)(ref Writer w) if (isOutputRange!(Writer, string)) {}
+        void toString(Writer)(ref Writer w, const ref FormatSpec!char fmt)
+        if (isOutputRange!(Writer, string))
+        {}
+    }
+    static struct J
+    {
+        string toString() {return "";}
+        void toString(Writer)(ref Writer w, ref FormatSpec!char fmt)
+        if (isOutputRange!(Writer, string))
+        {}
+    }
+    static struct K
+    {
+        void toString(Writer)(Writer w, const ref FormatSpec!char fmt)
+        if (isOutputRange!(Writer, string))
+        {}
+    }
+    static struct L
+    {
+        void toString(Writer)(ref Writer w, const FormatSpec!char fmt)
+        if (isOutputRange!(Writer, string))
+        {}
     }
 
     static assert(hasToString!(A, char) == 5);
@@ -3623,6 +3746,12 @@ private template hasToString(T, Char)
     static assert(hasToString!(D, char) == 2);
     static assert(hasToString!(E, char) == 1);
     static assert(hasToString!(F, char) == 6);
+    static assert(hasToString!(G, char) == 5);
+    static assert(hasToString!(H, char) == 6);
+    static assert(hasToString!(I, char) == 6);
+    static assert(hasToString!(J, char) == 1);
+    static assert(hasToString!(K, char) == 4);
+    static assert(hasToString!(L, char) == 0);
 }
 
 // object formatting with toString
@@ -3726,8 +3855,6 @@ private void formatValueImpl(Writer, T, Char)(auto ref Writer w, T val, const re
 if (is(T == class) && !is(T == enum))
 {
     enforceValidFormatSpec!(T, Char)(f);
-    // TODO: Change this once toString() works for shared objects.
-    static assert(!is(T == shared), "unable to format shared objects");
 
     // TODO: remove this check once `@disable override` deprecation cycle is finished
     static if (__traits(hasMember, T, "toString") && isSomeFunction!(val.toString))
@@ -3738,7 +3865,20 @@ if (is(T == class) && !is(T == enum))
         put(w, "null");
     else
     {
-        static if (hasToString!(T, Char) > 1 || (!isInputRange!T && !is(BuiltinTypeOf!T)))
+        static if ((is(T == immutable) || is(T == const) || is(T == shared)) && hasToString!(T, Char) == 0)
+        {
+            // issue 7879, remove this when Object gets const toString
+            static if (is(T == immutable))
+                put(w, "immutable(");
+            else static if (is(T == const))
+                put(w, "const(");
+            else static if (is(T == shared))
+                put(w, "shared(");
+
+            put(w, typeid(Unqual!T).name);
+            put(w, ')');
+        }
+        else static if (hasToString!(T, Char) > 1 || !isInputRange!T && !is(BuiltinTypeOf!T))
         {
             formatObject!(Writer, T, Char)(w, val, f);
         }
@@ -3828,6 +3968,53 @@ if (is(T == class) && !is(T == enum))
     formatTest( new C3([0, 1, 2]), "[012]" );
     formatTest( new C4([0, 1, 2]), "[012]" );
     formatTest( new C5([0, 1, 2]), "[0, 1, 2]" );
+}
+
+// outside the unittest block, otherwise the FQN of the
+// class contains the line number of the unittest
+version(unittest)
+{
+    private class C {}
+}
+
+// issue 7879
+@safe unittest
+{
+    const(C) c;
+    auto s = format("%s", c);
+    assert(s == "null");
+
+    immutable(C) c2 = new C();
+    s = format("%s", c2);
+    assert(s == "immutable(std.format.C)");
+
+    const(C) c3 = new C();
+    s = format("%s", c3);
+    assert(s == "const(std.format.C)");
+
+    shared(C) c4 = new C();
+    s = format("%s", c4);
+    assert(s == "shared(std.format.C)");
+}
+
+// https://issues.dlang.org/show_bug.cgi?id=7879
+@safe unittest
+{
+    class F
+    {
+        override string toString() const @safe
+        {
+            return "Foo";
+        }
+    }
+
+    const(F) c;
+    auto s = format("%s", c);
+    assert(s == "null");
+
+    const(F) c2 = new F();
+    s = format("%s", c2);
+    assert(s == "Foo", s);
 }
 
 // ditto
@@ -4047,7 +4234,7 @@ if ((is(T == struct) || is(T == union)) && (hasToString!(T, Char) || !is(Builtin
     assert(w.data == "S()");
 }
 
-unittest
+@safe unittest
 {
     //struct Foo { @disable string toString(); }
     //Foo foo;
@@ -4344,7 +4531,7 @@ private T getNth(string kind, alias Condition, T, A...)(uint index, A args)
 
 /* ======================== Unit Tests ====================================== */
 
-version(StdUnittest)
+version(unittest)
 void formatTest(T)(T val, string expected, size_t ln = __LINE__, string fn = __FILE__)
 {
     import core.exception : AssertError;
@@ -4358,7 +4545,7 @@ void formatTest(T)(T val, string expected, size_t ln = __LINE__, string fn = __F
             text("expected = `", expected, "`, result = `", w.data, "`"), fn, ln);
 }
 
-version(StdUnittest)
+version(unittest)
 void formatTest(T)(string fmt, T val, string expected, size_t ln = __LINE__, string fn = __FILE__) @safe
 {
     import core.exception : AssertError;
@@ -4371,7 +4558,7 @@ void formatTest(T)(string fmt, T val, string expected, size_t ln = __LINE__, str
             text("expected = `", expected, "`, result = `", w.data, "`"), fn, ln);
 }
 
-version(StdUnittest)
+version(unittest)
 void formatTest(T)(T val, string[] expected, size_t ln = __LINE__, string fn = __FILE__)
 {
     import core.exception : AssertError;
@@ -4389,7 +4576,7 @@ void formatTest(T)(T val, string[] expected, size_t ln = __LINE__, string fn = _
             text("expected one of `", expected, "`, result = `", w.data, "`"), fn, ln);
 }
 
-version(StdUnittest)
+version(unittest)
 void formatTest(T)(string fmt, T val, string[] expected, size_t ln = __LINE__, string fn = __FILE__) @safe
 {
     import core.exception : AssertError;
@@ -4871,7 +5058,7 @@ here:
     assert(a == "hello" && b == 124 && c == 34.5);
 }
 
-version(StdUnittest)
+version(unittest)
 void formatReflectTest(T)(ref T val, string fmt, string formatted, string fn = __FILE__, size_t ln = __LINE__)
 {
     import core.exception : AssertError;
@@ -4913,7 +5100,7 @@ void formatReflectTest(T)(ref T val, string fmt, string formatted, string fn = _
             input, fn, ln);
 }
 
-version(StdUnittest)
+version(unittest)
 void formatReflectTest(T)(ref T val, string fmt, string[] formatted, string fn = __FILE__, size_t ln = __LINE__)
 {
     import core.exception : AssertError;

@@ -1510,8 +1510,8 @@ private:
     version (Posix)
     int performWait(bool block) @trusted
     {
-        import std.exception : enforceEx;
-        enforceEx!ProcessException(owned, "Can't wait on a detached process");
+        import std.exception : enforce;
+        enforce!ProcessException(owned, "Can't wait on a detached process");
         if (_processID == terminated) return _exitCode;
         int exitCode;
         while (true)
@@ -1560,8 +1560,8 @@ private:
     {
         int performWait(bool block) @trusted
         {
-            import std.exception : enforceEx;
-            enforceEx!ProcessException(owned, "Can't wait on a detached process");
+            import std.exception : enforce;
+            enforce!ProcessException(owned, "Can't wait on a detached process");
             if (_processID == terminated) return _exitCode;
             assert(_handle != INVALID_HANDLE_VALUE);
             if (block)
@@ -1806,8 +1806,8 @@ void kill(Pid pid)
 /// ditto
 void kill(Pid pid, int codeOrSignal)
 {
-    import std.exception : enforceEx;
-    enforceEx!ProcessException(pid.owned, "Can't kill detached process");
+    import std.exception : enforce;
+    enforce!ProcessException(pid.owned, "Can't kill detached process");
     version (Windows)
     {
         if (codeOrSignal < 0) throw new ProcessException("Invalid exit code");
@@ -2734,7 +2734,7 @@ version (Windows) private immutable string shellSwitch = "/C";
 // file. On Windows the file name gets a .cmd extension, while on
 // POSIX its executable permission bit is set.  The file is
 // automatically deleted when the object goes out of scope.
-version(StdUnittest)
+version(unittest)
 private struct TestScript
 {
     this(string code) @system
@@ -2777,7 +2777,7 @@ private struct TestScript
     string path;
 }
 
-version(StdUnittest)
+version(unittest)
 private string uniqueTempPath() @safe
 {
     import std.file : tempDir;
@@ -3076,7 +3076,7 @@ if (is(typeof(allocator(size_t.init)[0] = char.init)))
     return buf;
 }
 
-version(Windows) version(StdUnittest)
+version(Windows) version(unittest)
 {
     import core.stdc.stddef;
     import core.stdc.wchar_ : wcslen;
@@ -3762,7 +3762,7 @@ version (Posix)
 {
     import core.sys.posix.stdlib;
 }
-version(StdUnittest)
+version(unittest)
 {
     import std.conv, std.file, std.random;
 }

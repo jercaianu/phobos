@@ -54,7 +54,8 @@ $(TR $(TD Miscellaneous) $(TD
         $(LINK http://anubis.dkuug.dk/JTC1/SC2/WG2/docs/n1335)
     Copyright: Copyright Digital Mars 2000 - 2012.
     License:   $(HTTP www.boost.org/LICENSE_1_0.txt, Boost License 1.0).
-    Authors:   $(HTTP digitalmars.com, Walter Bright) and Jonathan M Davis
+    Authors:   $(HTTP digitalmars.com, Walter Bright) and
+               $(HTTP jmdavisprog.com, Jonathan M Davis)
     Source:    $(PHOBOSSRC std/_utf.d)
    +/
 module std.utf;
@@ -1736,7 +1737,7 @@ unittest
 }
 
 
-version(StdUnittest) private void testDecode(R)(R range,
+version(unittest) private void testDecode(R)(R range,
                                              size_t index,
                                              dchar expectedChar,
                                              size_t expectedIndex,
@@ -1765,7 +1766,7 @@ version(StdUnittest) private void testDecode(R)(R range,
     }
 }
 
-version(StdUnittest) private void testDecodeFront(R)(ref R range,
+version(unittest) private void testDecodeFront(R)(ref R range,
                                                   dchar expectedChar,
                                                   size_t expectedNumCodeUnits,
                                                   size_t line = __LINE__)
@@ -1790,7 +1791,7 @@ version(StdUnittest) private void testDecodeFront(R)(ref R range,
     }
 }
 
-version(StdUnittest) private void testDecodeBack(R)(ref R range,
+version(unittest) private void testDecodeBack(R)(ref R range,
                                                  dchar expectedChar,
                                                  size_t expectedNumCodeUnits,
                                                  size_t line = __LINE__)
@@ -1821,7 +1822,7 @@ version(StdUnittest) private void testDecodeBack(R)(ref R range,
     }
 }
 
-version(StdUnittest) private void testAllDecode(R)(R range,
+version(unittest) private void testAllDecode(R)(R range,
                                                 dchar expectedChar,
                                                 size_t expectedIndex,
                                                 size_t line = __LINE__)
@@ -1835,7 +1836,7 @@ version(StdUnittest) private void testAllDecode(R)(R range,
     testDecodeFront(range, expectedChar, expectedIndex, line);
 }
 
-version(StdUnittest) private void testBadDecode(R)(R range, size_t index, size_t line = __LINE__)
+version(unittest) private void testBadDecode(R)(R range, size_t index, size_t line = __LINE__)
 {
     import core.exception : AssertError;
     import std.string : format;
@@ -1861,7 +1862,7 @@ version(StdUnittest) private void testBadDecode(R)(R range, size_t index, size_t
         assertThrown!UTFException(decodeFront(range, index), null, __FILE__, line);
 }
 
-version(StdUnittest) private void testBadDecodeBack(R)(R range, size_t line = __LINE__)
+version(unittest) private void testBadDecodeBack(R)(R range, size_t line = __LINE__)
 {
     // This condition is to allow unit testing all `decode` functions together
     static if (!isBidirectionalRange!R)
@@ -3152,7 +3153,7 @@ if (isSomeChar!C)
 
 
 // Ranges of code units for testing.
-version(StdUnittest)
+version(unittest)
 {
     struct InputCU(C)
     {
@@ -3906,7 +3907,7 @@ pure @safe nothrow @nogc unittest
     foreach (c; s[].byDchar()) { }
 }
 
-version(StdUnittest)
+version(unittest)
 int impureVariable;
 
 @system unittest
@@ -3978,6 +3979,68 @@ if (isSomeChar!C)
         {
             return r.byCodeUnit();
         }
+        else static if (is(C == dchar))
+        {
+            static struct Result
+            {
+                this(R val)
+                {
+                    r = val;
+                    popFront();
+                }
+
+                @property bool empty()
+                {
+                    return buff == uint.max;
+                }
+
+                @property auto front()
+                {
+                    assert(!empty, "Attempting to access the front of an empty byUTF");
+                    return cast(dchar) buff;
+                }
+
+                void popFront() scope
+                {
+                    assert(!empty, "Attempting to popFront an empty byUTF");
+                    if (r.empty)
+                    {
+                        buff = uint.max;
+                    }
+                    else
+                    {
+                        static if (is(RC == wchar))
+                            enum firstMulti = 0xD800; // First high surrogate.
+                        else
+                            enum firstMulti = 0x80; // First non-ASCII.
+                        if (r.front < firstMulti)
+                        {
+                            buff = r.front;
+                            r.popFront;
+                        }
+                        else
+                        {
+                            buff = () @trusted { return decodeFront!(Yes.useReplacementDchar)(r); }();
+                        }
+                    }
+                }
+
+                static if (isForwardRange!R)
+                {
+                    @property auto save() return scope
+                    {
+                        auto ret = this;
+                        ret.r = r.save;
+                        return ret;
+                    }
+                }
+
+                uint buff;
+                R r;
+            }
+
+            return Result(r);
+        }
         else
         {
             static struct Result
@@ -3994,7 +4057,11 @@ if (isSomeChar!C)
                         pos = 0;
                         auto c = r.front;
 
-                        if (c <= 0x7F)
+                        static if (C.sizeof >= 2 && RC.sizeof >= 2)
+                            enum firstMulti = 0xD800; // First high surrogate.
+                        else
+                            enum firstMulti = 0x80; // First non-ASCII.
+                        if (c < firstMulti)
                         {
                             fill = 1;
                             r.popFront;

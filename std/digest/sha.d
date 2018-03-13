@@ -118,7 +118,7 @@ else version(D_InlineAsm_X86_64)
 version(LittleEndian) import core.bitop : bswap;
 
 
-version(StdUnittest)
+version(unittest)
 {
     import std.exception;
 }
@@ -909,7 +909,8 @@ alias SHA512_256 = SHA!(1024, 256); /// SHA alias for SHA-512/256, hash is ubyte
     sha256.put(cast(ubyte[])"abcdef");
     sha256.start();
     sha256.put(cast(ubyte[])"");
-    assert(sha256.finish() == cast(ubyte[]) hexString!"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+    assert(sha256.finish() == cast(ubyte[])
+            hexString!"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
 
     SHA384 sha384;
     sha384.put(cast(ubyte[])"abcdef");
@@ -922,7 +923,8 @@ alias SHA512_256 = SHA!(1024, 256); /// SHA alias for SHA-512/256, hash is ubyte
     sha512.put(cast(ubyte[])"abcdef");
     sha512.start();
     sha512.put(cast(ubyte[])"");
-    assert(sha512.finish() == cast(ubyte[]) hexString!("cf83e1357eefb8bdf1542850d66d8007d620e4050b571"
+    assert(sha512.finish() == cast(ubyte[])
+            hexString!("cf83e1357eefb8bdf1542850d66d8007d620e4050b571"
         ~"5dc83f4a921d36ce9ce47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e"));
 
     SHA512_224 sha512_224;
@@ -935,7 +937,8 @@ alias SHA512_256 = SHA!(1024, 256); /// SHA alias for SHA-512/256, hash is ubyte
     sha512_256.put(cast(ubyte[])"abcdef");
     sha512_256.start();
     sha512_256.put(cast(ubyte[])"");
-    assert(sha512_256.finish() == cast(ubyte[]) hexString!"c672b8d1ef56ed28ab87c3622c5114069bdd3ad7b8f9737498d0c01ecef0967a");
+    assert(sha512_256.finish() == cast(ubyte[])
+            hexString!"c672b8d1ef56ed28ab87c3622c5114069bdd3ad7b8f9737498d0c01ecef0967a");
 
     digest        = sha1Of      ("");
     digest224     = sha224Of    ("");
@@ -1117,7 +1120,7 @@ alias SHA512_256 = SHA!(1024, 256); /// SHA alias for SHA-512/256, hash is ubyte
     assert(digest512_224 == cast(ubyte[]) hexString!"37ab331d76f0d36de422bd0edeb22a28accd487b7a8453ae965dd287");
     assert(digest512_256 == cast(ubyte[]) hexString!"9a59a052930187a97038cae692f30708aa6491923ef5194394dc68d56c74fb21");
 
-    enum ubyte[20] input = hexString!"a9993e364706816aba3e25717850c26c9cd0d89d";
+    enum ubyte[20] input = cast(ubyte[20]) hexString!"a9993e364706816aba3e25717850c26c9cd0d89d";
     assert(toHexString(input)
         == "A9993E364706816ABA3E25717850C26C9CD0D89D");
 }

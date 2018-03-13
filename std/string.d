@@ -135,15 +135,15 @@ License: $(HTTP boost.org/LICENSE_1_0.txt, Boost License 1.0).
 
 Authors: $(HTTP digitalmars.com, Walter Bright),
          $(HTTP erdani.org, Andrei Alexandrescu),
-        Jonathan M Davis,
-        and David L. 'SpottedTiger' Davis
+         $(HTTP jmdavisprog.com, Jonathan M Davis),
+         and David L. 'SpottedTiger' Davis
 
 Source:    $(PHOBOSSRC std/_string.d)
 
 */
 module std.string;
 
-version(StdUnittest)
+version(unittest)
 {
 private:
     struct TestAliasedString
@@ -6402,7 +6402,7 @@ if (isSomeString!S ||
 
 version(TestComplex)
 deprecated
-unittest
+@safe unittest
 {
     import std.conv : to;
     assert(isNumeric(to!string(123e+2+1234.78Li)) == true);

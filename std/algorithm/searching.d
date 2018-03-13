@@ -1138,10 +1138,13 @@ if (isBidirectionalRange!R &&
         static if (isDefaultPred && isSomeChar!E && E.sizeof <= ElementEncodingType!R.sizeof)
             return doesThisEnd[$ - 1] == withThis;
         // specialize for ASCII as to not change previous behavior
-        else if (withThis <= 0x7F)
-            return predFunc(doesThisEnd[$ - 1], withThis);
         else
-            return predFunc(doesThisEnd.back, withThis);
+        {
+            if (withThis <= 0x7F)
+                return predFunc(doesThisEnd[$ - 1], withThis);
+            else
+                return predFunc(doesThisEnd.back, withThis);
+        }
     }
     else
     {
@@ -2558,7 +2561,7 @@ the given predicate. If there are no such two elements, returns `r` advanced
 until empty.
 
 See_Also:
-     $(HTTP sgi.com/tech/stl/adjacent_find.html, STL's adjacent_find)
+     $(LINK2 http://en.cppreference.com/w/cpp/algorithm/adjacent_find, STL's `adjacent_find`)
 */
 Range findAdjacent(alias pred = "a == b", Range)(Range r)
 if (isForwardRange!(Range))
@@ -4099,12 +4102,29 @@ list matches).
 In the case when no needle parameters are given, return `true` iff front of
 `doesThisStart` fulfils predicate `pred`.
  */
-uint startsWith(alias pred = "a == b", Range, Needles...)(Range doesThisStart, Needles withOneOfThese)
+uint startsWith(alias pred = (a, b) => a == b, Range, Needles...)(Range doesThisStart, Needles withOneOfThese)
 if (isInputRange!Range && Needles.length > 1 &&
     is(typeof(.startsWith!pred(doesThisStart, withOneOfThese[0])) : bool ) &&
     is(typeof(.startsWith!pred(doesThisStart, withOneOfThese[1 .. $])) : uint))
 {
-    alias haystack = doesThisStart;
+    import std.meta : allSatisfy;
+
+    template checkType(T)
+    {
+        enum checkType = is(Unqual!(ElementEncodingType!Range) == Unqual!T);
+    }
+
+    // auto-decoding special case
+    static if (__traits(isSame, binaryFun!pred, (a, b) => a == b) &&
+        isNarrowString!Range && allSatisfy!(checkType, Needles))
+    {
+        import std.utf : byCodeUnit;
+        auto haystack = doesThisStart.byCodeUnit;
+    }
+    else
+    {
+        alias haystack = doesThisStart;
+    }
     alias needles  = withOneOfThese;
 
     // Make one pass looking for empty ranges in needles
@@ -4263,10 +4283,13 @@ if (isInputRange!R &&
         static if (isDefaultPred && isSomeChar!E && E.sizeof <= ElementEncodingType!R.sizeof)
             return doesThisStart[0] == withThis;
         // specialize for ASCII as to not change previous behavior
-        else if (withThis <= 0x7F)
-            return predFunc(doesThisStart[0], withThis);
         else
-            return predFunc(doesThisStart.front, withThis);
+        {
+            if (withThis <= 0x7F)
+                return predFunc(doesThisStart[0], withThis);
+            else
+                return predFunc(doesThisStart.front, withThis);
+        }
     }
     else
     {

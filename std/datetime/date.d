@@ -35,7 +35,7 @@ $(TR $(TD Other) $(TD
 )
 
     License:   $(HTTP www.boost.org/LICENSE_1_0.txt, Boost License 1.0).
-    Authors:   Jonathan M Davis
+    Authors:   $(HTTP jmdavisprog.com, Jonathan M Davis)
     Source:    $(PHOBOSSRC std/datetime/_date.d)
 +/
 module std.datetime.date;
@@ -47,7 +47,7 @@ import std.traits : isSomeString, Unqual;
 import std.typecons : Flag;
 import std.range.primitives : isOutputRange;
 
-version(StdUnittest) import std.exception : assertThrown;
+version(unittest) import std.exception : assertThrown;
 
 @safe unittest
 {
@@ -10305,7 +10305,7 @@ if (isSomeString!T)
 }
 
 
-version(StdUnittest)
+version(unittest)
 {
     // All of these helper arrays are sorted in ascending order.
     auto testYearsBC = [-1999, -1200, -600, -4, -1, 0];

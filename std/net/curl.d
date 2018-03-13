@@ -164,7 +164,17 @@ import std.encoding : EncodingScheme;
 import std.traits : isSomeChar;
 import std.typecons : Flag, Yes, No, Tuple;
 
-version(StdUnittest)
+// Curl tests for FreeBSD 32-bit are temporarily disabled.
+// https://github.com/braddr/d-tester/issues/70
+// https://issues.dlang.org/show_bug.cgi?id=18519
+version(unittest)
+version(FreeBSD)
+version(X86)
+    version = DisableCurlTests;
+
+version(DisableCurlTests) {} else:
+
+version(unittest)
 {
     import std.socket : Socket;
 
@@ -185,6 +195,7 @@ version(StdUnittest)
     private:
         string _addr;
         Tid tid;
+        TcpSocket sock;
 
         static void loop(shared TcpSocket listener)
         {
@@ -214,19 +225,30 @@ version(StdUnittest)
         import std.concurrency : spawn;
         import std.socket : INADDR_LOOPBACK, InternetAddress, TcpSocket;
 
+        tlsInit = true;
         auto sock = new TcpSocket;
         sock.bind(new InternetAddress(INADDR_LOOPBACK, InternetAddress.PORT_ANY));
         sock.listen(1);
         auto addr = sock.localAddress.toString();
         auto tid = spawn(&TestServer.loop, cast(shared) sock);
-        return TestServer(addr, tid);
+        return TestServer(addr, tid, sock);
     }
+
+    __gshared TestServer server;
+    bool tlsInit;
 
     private ref TestServer testServer()
     {
         import std.concurrency : initOnce;
-        __gshared TestServer server;
         return initOnce!server(startServer());
+    }
+
+    static ~this()
+    {
+        // terminate server from a thread local dtor of the thread that started it,
+        //  because thread_joinall is called before shared module dtors
+        if (tlsInit && server.sock)
+            server.sock.close();
     }
 
     private struct Request(T)
@@ -313,7 +335,7 @@ version(StdUnittest)
 version(StdDdoc) import std.stdio;
 
 // Default data timeout for Protocols
-enum _defaultDataTimeout = dur!"minutes"(2);
+private enum _defaultDataTimeout = dur!"minutes"(2);
 
 /**
 Macros:
@@ -1643,7 +1665,7 @@ if (isCurlConn!Conn && isSomeChar!Char && isSomeChar!Terminator)
     }
     else
     {
-        import std.concurrency;
+        import std.concurrency : OnCrowding, send, setMaxMailboxSize, spawn, thisTid, Tid;
         // 50 is just an arbitrary number for now
         setMaxMailboxSize(thisTid, 50, OnCrowding.block);
         auto tid = spawn(&_async!().spawn!(Conn, Char, Terminator));
@@ -1767,7 +1789,7 @@ if (isCurlConn!(Conn))
     }
     else
     {
-        import std.concurrency;
+        import std.concurrency : OnCrowding, send, setMaxMailboxSize, spawn, thisTid, Tid;
         // 50 is just an arbitrary number for now
         setMaxMailboxSize(thisTid, 50, OnCrowding.block);
         auto tid = spawn(&_async!().spawn!(Conn, ubyte));
@@ -1826,7 +1848,7 @@ if (isCurlConn!(Conn))
 */
 private mixin template Protocol()
 {
-    import etc.c.curl : CurlReadFunc;
+    import etc.c.curl : CurlReadFunc, RawCurlProxy = CurlProxy;
     import core.time : Duration;
     import std.socket : InternetAddress;
 
@@ -1911,7 +1933,7 @@ private mixin template Protocol()
     }
 
     /// Type of proxy
-    alias CurlProxy = etc.c.curl.CurlProxy;
+    alias CurlProxy = RawCurlProxy;
 
     /** Proxy type
      *  See: $(HTTP curl.haxx.se/libcurl/c/curl_easy_setopt.html#CURLOPTPROXY, _proxy_type)
@@ -2314,7 +2336,7 @@ private bool decodeLineInto(Terminator, Char = char)(ref const(ubyte)[] basesrc,
   * http.perform();
   * ---
   *
-  * See_Also: $(_HTTP www.ietf.org/rfc/rfc2616.txt, RFC2616)
+  * See_Also: $(LINK2 http://www.ietf.org/rfc/rfc2616.txt, RFC2616)
   *
   */
 struct HTTP
@@ -2323,7 +2345,7 @@ struct HTTP
 
     import std.datetime.systime : SysTime;
     import std.typecons : RefCounted;
-    import etc.c.curl;
+    import etc.c.curl : CurlAuth, CurlInfo, curl_slist, CURLVERSION_NOW, curl_off_t;
 
     /// Authentication method equal to $(REF CurlAuth, etc,c,curl)
     alias AuthMethod = CurlAuth;
@@ -2561,6 +2583,8 @@ struct HTTP
     // docs mixed in.
     version (StdDdoc)
     {
+        static import etc.c.curl;
+
         /// Value to return from $(D onSend)/$(D onReceive) delegates in order to
         /// pause a request
         alias requestPause = CurlReadFunc.pause;
@@ -3244,7 +3268,7 @@ struct FTP
     mixin Protocol;
 
     import std.typecons : RefCounted;
-    import etc.c.curl;
+    import etc.c.curl : CurlError, CurlInfo, curl_off_t, curl_slist;
 
     private struct Impl
     {
@@ -3338,6 +3362,8 @@ struct FTP
     // docs mixed in.
     version (StdDdoc)
     {
+        static import etc.c.curl;
+
         /// Value to return from $(D onSend)/$(D onReceive) delegates in order to
         /// pause a request
         alias requestPause = CurlReadFunc.pause;
@@ -3646,7 +3672,7 @@ struct SMTP
 {
     mixin Protocol;
     import std.typecons : RefCounted;
-    import etc.c.curl;
+    import etc.c.curl : CurlUseSSL, curl_slist;
 
     private struct Impl
     {
@@ -3762,6 +3788,8 @@ struct SMTP
     // docs mixed in.
     version (StdDdoc)
     {
+        static import etc.c.curl;
+
         /// Value to return from $(D onSend)/$(D onReceive) delegates in order to
         /// pause a request
         alias requestPause = CurlReadFunc.pause;
@@ -4056,9 +4084,11 @@ alias ThrowOnError = Flag!"throwOnError";
 
 private struct CurlAPI
 {
-    import etc.c.curl;
+    import etc.c.curl : CurlGlobal;
     static struct API
     {
+    import etc.c.curl : curl_version_info, curl_version_info_data,
+                        CURL, CURLcode, CURLINFO, CURLoption, CURLversion, curl_slist;
     extern(C):
         import core.stdc.config : c_long;
         CURLcode function(c_long flags) global_init;
@@ -4189,7 +4219,10 @@ private struct CurlAPI
 */
 struct Curl
 {
-    import etc.c.curl;
+    import etc.c.curl : CURL, CurlError, CurlPause, CurlSeek, CurlSeekPos,
+                        curl_socket_t, CurlSockType,
+                        CurlReadFunc, CurlInfo, curlsocktype, curl_off_t,
+                        LIBCURL_VERSION_MAJOR, LIBCURL_VERSION_MINOR, LIBCURL_VERSION_PATCH;
 
     alias OutData = void[];
     alias InData = ubyte[];

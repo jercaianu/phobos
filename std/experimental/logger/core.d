@@ -825,7 +825,7 @@ abstract class Logger
     }
 
     /** Logs a part of the log message. */
-    protected void logMsgPart(const(char)[] msg) @safe
+    protected void logMsgPart(scope const(char)[] msg) @safe
     {
         static if (isLoggingActive)
         {
@@ -1846,7 +1846,7 @@ package class TestLogger : Logger
     }
 }
 
-version(StdUnittest) private void testFuncNames(Logger logger) @safe
+version(unittest) private void testFuncNames(Logger logger) @safe
 {
     string s = "I'm here";
     logger.log(s);

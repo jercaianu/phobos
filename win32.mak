@@ -47,7 +47,7 @@ DFLAGS=-conf= -O -release -w -de -dip25 -I$(DRUNTIME)\import
 
 ## Flags for compiling unittests
 
-UDFLAGS=-unittest -version=StdUnittest -conf= -O -w -dip25 -I$(DRUNTIME)\import
+UDFLAGS=-unittest -conf= -O -w -dip25 -I$(DRUNTIME)\import
 
 ## C compiler
 
@@ -284,7 +284,7 @@ SRC_STD_INTERNAL_WINDOWS= \
 	std\internal\windows\advapi32.d
 
 SRC_STD_EXP= \
-	std\experimental\checkedint.d std\experimental\typecons.d
+	std\experimental\all.d std\experimental\checkedint.d std\experimental\typecons.d
 
 SRC_STD_EXP_ALLOC_BB= \
 	std\experimental\allocator\building_blocks\affix_allocator.d \

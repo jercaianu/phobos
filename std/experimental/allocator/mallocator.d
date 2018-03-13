@@ -12,7 +12,7 @@ import std.experimental.allocator.common;
  */
 struct Mallocator
 {
-    version(StdUnittest)
+    version(unittest)
     @system unittest { testAllocator!(() => Mallocator.instance); }
 
     /**
@@ -234,6 +234,15 @@ struct AlignedMallocator
         assert(a.isGoodDynamicAlignment);
         void* result;
         auto code = posix_memalign(&result, a, bytes);
+
+version(OSX)
+version(LDC_AddressSanitizer)
+{
+        // The return value with AddressSanitizer may be -1 instead of ENOMEM
+        // or EINVAL. See https://bugs.llvm.org/show_bug.cgi?id=36510
+        if (code == -1)
+            return null;
+}
         if (code == ENOMEM)
             return null;
 
@@ -354,7 +363,7 @@ struct AlignedMallocator
     //...
 }
 
-version(StdUnittest) version(CRuntime_DigitalMars)
+version(unittest) version(CRuntime_DigitalMars)
 @nogc nothrow
 size_t addr(ref void* ptr) { return cast(size_t) ptr; }
 

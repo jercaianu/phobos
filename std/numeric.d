@@ -2,7 +2,7 @@
 
 /**
 This module is a port of a growing fragment of the $(D_PARAM numeric)
-header in Alexander Stepanov's $(LINK2 http://sgi.com/tech/stl,
+header in Alexander Stepanov's $(LINK2 https://en.wikipedia.org/wiki/Standard_Template_Library,
 Standard Template Library), with a few additions.
 
 Macros:
@@ -26,7 +26,7 @@ import std.range.primitives;
 import std.traits;
 import std.typecons;
 
-version(StdUnittest)
+version(unittest)
 {
     import std.stdio;
 }
@@ -2684,6 +2684,12 @@ T gcd(T)(T a, T b)
 
     assert(a >= 0 && b >= 0);
 
+    // Special cases.
+    if (a == 0)
+        return b;
+    if (b == 0)
+        return a;
+
     static if (canUseBinaryGcd)
     {
         uint shift = 0;
@@ -2726,6 +2732,9 @@ T gcd(T)(T a, T b)
     assert(gcd(BigInt("71_000_000_000_000_000_000"),
                BigInt("31_000_000_000_000_000_000")) ==
            BigInt("1_000_000_000_000_000_000"));
+
+    assert(gcd(BigInt(0), BigInt(1234567)) == BigInt(1234567));
+    assert(gcd(BigInt(1234567), BigInt(0)) == BigInt(1234567));
 }
 
 @safe pure nothrow unittest

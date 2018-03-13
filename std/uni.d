@@ -719,7 +719,7 @@ debug(std_uni) import std.stdio; // writefln, writeln
 
 private:
 
-version(StdUnittest)
+version(unittest)
 {
 private:
     struct TestAliasedString
@@ -1578,7 +1578,7 @@ if (is(Unqual!T == T))
     assert(nullSlice.empty);
 }
 
-private auto packedArrayView(T)(inout(size_t)* ptr, size_t items) @trusted pure nothrow
+private inout(PackedArrayView!T) packedArrayView(T)(inout(size_t)* ptr, size_t items)
 {
     return inout(PackedArrayView!T)(ptr, 0, items);
 }
@@ -1754,7 +1754,7 @@ alias sharSwitchLowerBound = sharMethod!switchUniformLowerBound;
 
 
 // Simple storage manipulation policy
-@trusted private struct GcPolicy
+@safe private struct GcPolicy
 {
     import std.traits : isDynamicArray;
 
@@ -1791,7 +1791,7 @@ alias sharSwitchLowerBound = sharMethod!switchUniformLowerBound;
         insertInPlace(arr, arr.length, value);
     }
 
-    static void destroy(T)(ref T arr)
+    static void destroy(T)(ref T arr) pure // pure required for -dip25, inferred for -dip1000
         if (isDynamicArray!T && is(Unqual!T == T))
     {
         debug
@@ -1801,7 +1801,7 @@ alias sharSwitchLowerBound = sharMethod!switchUniformLowerBound;
         arr = null;
     }
 
-    static void destroy(T)(ref T arr)
+    static void destroy(T)(ref T arr) pure // pure required for -dip25, inferred for -dip1000
         if (isDynamicArray!T && !is(Unqual!T == T))
     {
         arr = null;
@@ -1809,7 +1809,7 @@ alias sharSwitchLowerBound = sharMethod!switchUniformLowerBound;
 }
 
 // ditto
-@trusted struct ReallocPolicy
+@safe struct ReallocPolicy
 {
     import std.range.primitives : hasLength;
 
@@ -1820,9 +1820,9 @@ alias sharSwitchLowerBound = sharMethod!switchUniformLowerBound;
         return result;
     }
 
-    static T[] alloc(T)(size_t size)
+    static T[] alloc(T)(size_t size) @trusted
     {
-        import core.stdc.stdlib : malloc;
+        import core.memory : pureMalloc;
         import std.exception : enforce;
 
         import core.checkedint : mulu;
@@ -1830,13 +1830,13 @@ alias sharSwitchLowerBound = sharMethod!switchUniformLowerBound;
         size_t nbytes = mulu(size, T.sizeof, overflow);
         if (overflow) assert(0);
 
-        auto ptr = cast(T*) enforce(malloc(nbytes), "out of memory on C heap");
+        auto ptr = cast(T*) enforce(pureMalloc(nbytes), "out of memory on C heap");
         return ptr[0 .. size];
     }
 
-    static T[] realloc(T)(T[] arr, size_t size)
+    static T[] realloc(T)(scope T[] arr, size_t size) @trusted
     {
-        import core.stdc.stdlib : realloc;
+        import core.memory : pureRealloc;
         import std.exception : enforce;
         if (!size)
         {
@@ -1849,7 +1849,7 @@ alias sharSwitchLowerBound = sharMethod!switchUniformLowerBound;
         size_t nbytes = mulu(size, T.sizeof, overflow);
         if (overflow) assert(0);
 
-        auto ptr = cast(T*) enforce(realloc(arr.ptr, nbytes), "out of memory on C heap");
+        auto ptr = cast(T*) enforce(pureRealloc(arr.ptr, nbytes), "out of memory on C heap");
         return ptr[0 .. size];
     }
 
@@ -1866,7 +1866,7 @@ alias sharSwitchLowerBound = sharMethod!switchUniformLowerBound;
         arr[$-1] = force!T(value);
     }
 
-    @safe unittest
+    pure @safe unittest
     {
         int[] arr;
         ReallocPolicy.append(arr, 3);
@@ -1889,7 +1889,7 @@ alias sharSwitchLowerBound = sharMethod!switchUniformLowerBound;
         copy(value, arr[$-value.length..$]);
     }
 
-    @safe unittest
+    pure @safe unittest
     {
         int[] arr;
         ReallocPolicy.append(arr, [1,2,3]);
@@ -1898,11 +1898,11 @@ alias sharSwitchLowerBound = sharMethod!switchUniformLowerBound;
         assert(equal(arr, [1,2,3]));
     }
 
-    static void destroy(T)(ref T[] arr)
+    static void destroy(T)(scope ref T[] arr) @trusted
     {
-        import core.stdc.stdlib : free;
+        import core.memory : pureFree;
         if (arr.ptr)
-            free(arr.ptr);
+            pureFree(arr.ptr);
         arr = null;
     }
 }
@@ -1910,7 +1910,7 @@ alias sharSwitchLowerBound = sharMethod!switchUniformLowerBound;
 //build hack
 alias _RealArray = CowArray!ReallocPolicy;
 
-@safe unittest
+pure @safe unittest
 {
     import std.algorithm.comparison : equal;
 
@@ -2064,7 +2064,7 @@ pure:
     alias $(LREF CodepointSet) throughout the whole code base.
     )
 */
-@trusted public struct InversionList(SP=GcPolicy)
+public struct InversionList(SP=GcPolicy)
 {
     import std.range : assumeSorted;
 
@@ -2150,7 +2150,7 @@ pure:
     }
 
     ///
-    @safe unittest
+    pure @safe unittest
     {
         import std.algorithm.comparison : equal;
 
@@ -2164,6 +2164,12 @@ pure:
         auto set2 = CodepointSet('а', 'я'+1, 'a', 'd', 'b', 'z'+1);
         //the same end result
         assert(set2.byInterval.equal(set.byInterval));
+        // test constructor this(Range)(Range intervals)
+        auto chessPiecesWhite = CodepointInterval(9812, 9818);
+        auto chessPiecesBlack = CodepointInterval(9818, 9824);
+        auto set3 = CodepointSet([chessPiecesWhite, chessPiecesBlack]);
+        foreach (v; '♔'..'♟'+1)
+            assert(set3[v]);
     }
 
     /**
@@ -2179,7 +2185,7 @@ pure:
         assert(set.byInterval.equal([tuple('A','E'), tuple('a','e')]));
         -----------
     */
-    @property auto byInterval()
+    @property auto byInterval() scope
     {
         return Intervals!(typeof(data))(data);
     }
@@ -2201,7 +2207,7 @@ pure:
     }
 
     ///
-    @safe unittest
+    pure @safe unittest
     {
         auto gothic = unicode.Gothic;
         // Gothic letter ahsa
@@ -2287,7 +2293,7 @@ public:
     }
 
     ///
-    @safe unittest
+    pure @safe unittest
     {
         import std.algorithm.comparison : equal;
         import std.range : iota;
@@ -2353,7 +2359,7 @@ public:
     }
 
     ///
-    @safe unittest
+    pure @safe unittest
     {
         assert('я' in unicode.Cyrillic);
         assert(!('z' in unicode.Cyrillic));
@@ -2376,7 +2382,7 @@ public:
     */
     @property auto byCodepoint()
     {
-        @trusted static struct CodepointRange
+        static struct CodepointRange
         {
             this(This set)
             {
@@ -2415,7 +2421,7 @@ public:
     }
 
     ///
-    @safe unittest
+    pure @safe unittest
     {
         import std.algorithm.comparison : equal;
         import std.range : iota;
@@ -2473,7 +2479,7 @@ public:
     }
 
     ///
-    @safe unittest
+    pure @safe unittest
     {
         import std.conv : to;
         import std.format : format;
@@ -2494,7 +2500,7 @@ public:
             ~"[0XA640..0XA698) [0XA69F..0XA6A0)");
     }
 
-    @safe unittest
+    pure @safe unittest
     {
         import std.exception : assertThrown;
         import std.format : format, FormatException;
@@ -2512,7 +2518,7 @@ public:
     }
 
     ///
-    @safe unittest
+    pure @safe unittest
     {
         CodepointSet someSet;
         someSet.add('0', '5').add('A','Z'+1);
@@ -2548,7 +2554,7 @@ private:
         return this;
     }
 
-    @safe unittest
+    pure @safe unittest
     {
         assert(unicode.Cyrillic.intersect('-').byInterval.empty);
     }
@@ -2615,7 +2621,7 @@ public:
     }
 
     ///
-    @safe unittest
+    pure @safe unittest
     {
         auto set = unicode.ASCII;
         // union with the inverse gets all of the code points in the Unicode
@@ -2657,7 +2663,7 @@ public:
             return result;
         }
 
-        static string binaryScope(R)(R ivals, string indent)
+        static string binaryScope(R)(R ivals, string indent) @safe
         {
             // time to do unrolled comparisons?
             if (ivals.length < maxBinary)
@@ -2775,7 +2781,7 @@ public:
     }
 
     ///
-    @safe unittest
+    pure @safe unittest
     {
         CodepointSet emptySet;
         assert(emptySet.length == 0);
@@ -2789,14 +2795,14 @@ private:
     // a random-access range of integral pairs
     static struct Intervals(Range)
     {
-        this(Range sp)
+        this(Range sp) scope
         {
             slice = sp;
             start = 0;
             end = sp.length;
         }
 
-        this(Range sp, size_t s, size_t e)
+        this(Range sp, size_t s, size_t e) scope
         {
             slice = sp;
             start = s;
@@ -3120,7 +3126,7 @@ private:
     CowArray!SP data;
 }
 
-@system unittest
+pure @system unittest
 {
     import std.conv : to;
     assert(unicode.ASCII.to!string() == "[0..128)");
@@ -3405,7 +3411,7 @@ private:
     uint[] data;
 }
 
-@safe unittest// Uint24 tests
+pure @safe unittest// Uint24 tests
 {
     import std.algorithm.comparison : equal;
     import std.algorithm.mutation : copy;
@@ -3492,12 +3498,12 @@ private:
     }}
 }
 
-version(StdUnittest)
+version(unittest)
 {
     private alias AllSets = AliasSeq!(InversionList!GcPolicy, InversionList!ReallocPolicy);
 }
 
-@safe unittest// core set primitives test
+pure @safe unittest// core set primitives test
 {
     import std.conv : text;
     foreach (CodeList; AllSets)
@@ -3574,7 +3580,7 @@ version(StdUnittest)
 
 
 //test constructor to work with any order of intervals
-@safe unittest
+pure @safe unittest
 {
     import std.algorithm.comparison : equal;
     import std.conv : text, to;
@@ -3618,7 +3624,7 @@ version(StdUnittest)
 }
 
 
-@safe unittest
+pure @safe unittest
 {   // full set operations
     import std.conv : text;
     foreach (CodeList; AllSets)
@@ -3723,7 +3729,7 @@ version(StdUnittest)
 
 }
 
-@safe unittest// vs single dchar
+pure @safe unittest// vs single dchar
 {
     import std.conv : text;
     CodepointSet a = CodepointSet(10, 100, 120, 200);
@@ -3731,7 +3737,7 @@ version(StdUnittest)
     assert((a & 'B') == CodepointSet(66, 67));
 }
 
-@safe unittest// iteration & opIndex
+pure @safe unittest// iteration & opIndex
 {
     import std.algorithm.comparison : equal;
     import std.conv : text;
@@ -4327,7 +4333,7 @@ if (sumOfIntegerTuple!sizes == 21)
 
     static if (is(TypeOfBitPacked!T == bool))
     {
-        auto codepointTrie(Set)(in Set set)
+        auto codepointTrie(Set)(const scope Set set)
             if (isCodepointSet!Set)
         {
             return codepointSetTrie(set);
@@ -4620,7 +4626,7 @@ public struct MatcherConcept
         assert(false);
     }
     ///
-    @safe unittest
+    pure @safe unittest
     {
         string truth = "2² = 4";
         auto m = utfMatcher!char(unicode.Number);
@@ -4656,7 +4662,7 @@ public struct MatcherConcept
         return this;
     }
 
-    @safe unittest
+    pure @safe unittest
     {
         auto m = utfMatcher!char(unicode.Number);
         string square = "2²";
@@ -4693,7 +4699,7 @@ public enum isUtfMatcher(M, C) = __traits(compiles, (){
     assert(is(typeof(m.test(s)) == bool));
 });
 
-@safe unittest
+pure @safe unittest
 {
     alias CharMatcher = typeof(utfMatcher!char(CodepointSet.init));
     alias WcharMatcher = typeof(utfMatcher!wchar(CodepointSet.init));
@@ -4711,7 +4717,7 @@ enum Mode {
 
 mixin template ForwardStrings()
 {
-    private bool fwdStr(string fn, C)(ref C[] str) const pure
+    private bool fwdStr(string fn, C)(ref C[] str) const @trusted
     {
         import std.utf : byCodeUnit;
         alias type = typeof(byCodeUnit(str));
@@ -4826,7 +4832,7 @@ template Utf8Matcher()
         }
         enum dispatch = genDispatch();
 
-        public bool match(Range)(ref Range inp) const pure
+        public bool match(Range)(ref Range inp) const
             if (isRandomAccessRange!Range && is(ElementType!Range : char))
         {
             enum mode = Mode.skipOnMatch;
@@ -4850,7 +4856,7 @@ template Utf8Matcher()
 
         static if (Sizes.length == 4) // can skip iff can detect all encodings
         {
-            public bool skip(Range)(ref Range inp) const pure @trusted
+            public bool skip(Range)(ref Range inp) const
                 if (isRandomAccessRange!Range && is(ElementType!Range : char))
             {
                 enum mode = Mode.alwaysSkip;
@@ -4871,7 +4877,7 @@ template Utf8Matcher()
             }
         }
 
-        public bool test(Range)(ref Range inp) const pure @trusted
+        public bool test(Range)(ref Range inp) const
             if (isRandomAccessRange!Range && is(ElementType!Range : char))
         {
             enum mode = Mode.neverSkip;
@@ -4888,19 +4894,19 @@ template Utf8Matcher()
                 mixin(dispatch);
         }
 
-        bool match(C)(ref C[] str) const pure @trusted
+        bool match(C)(ref C[] str) const
             if (isSomeChar!C)
         {
             return fwdStr!"match"(str);
         }
 
-        bool skip(C)(ref C[] str) const pure @trusted
+        bool skip(C)(ref C[] str) const
             if (isSomeChar!C)
         {
             return fwdStr!"skip"(str);
         }
 
-        bool test(C)(ref C[] str) const pure @trusted
+        bool test(C)(ref C[] str) const
             if (isSomeChar!C)
         {
             return fwdStr!"test"(str);
@@ -4922,12 +4928,12 @@ template Utf8Matcher()
         //static disptach helper UTF size ==> table
         alias tab(int i) = tables[i - 1];
 
-        package @property auto subMatcher(SizesToPick...)() @trusted
+        package @property CherryPick!(Impl, SizesToPick) subMatcher(SizesToPick...)()
         {
             return CherryPick!(Impl, SizesToPick)(&this);
         }
 
-        bool lookup(int size, Mode mode, Range)(ref Range inp) const pure @trusted
+        bool lookup(int size, Mode mode, Range)(ref Range inp) const
         {
             if (inp.length < size)
             {
@@ -4992,8 +4998,8 @@ template Utf8Matcher()
             "Only lengths of 1, 2, 3 and 4 code unit are possible for UTF-8");
     private:
         I* m;
-        @property ref tab(int i)() const pure { return m.tables[i - 1]; }
-        bool lookup(int size, Mode mode, Range)(ref Range inp) const pure
+        @property auto tab(int i)() const { return m.tables[i - 1]; }
+        bool lookup(int size, Mode mode, Range)(ref Range inp) const
         {
             return m.lookup!(size, mode)(inp);
         }
@@ -5005,7 +5011,7 @@ template Utf16Matcher()
 {
     enum validSize(int sz) = sz >= 1 && sz <= 2;
 
-    void badEncoding() pure
+    void badEncoding() pure @safe
     {
         import std.utf : UTFException;
         throw new UTFException("Invalid UTF-16 sequence");
@@ -5055,7 +5061,7 @@ template Utf16Matcher()
     //sizeFlags, lookupUni and ascii
     mixin template DefMatcher()
     {
-        public bool match(Range)(ref Range inp) const pure @trusted
+        public bool match(Range)(ref Range inp) const
             if (isRandomAccessRange!Range && is(ElementType!Range : wchar))
         {
             enum mode = Mode.skipOnMatch;
@@ -5081,7 +5087,7 @@ template Utf16Matcher()
 
         static if (Sizes.length == 2)
         {
-            public bool skip(Range)(ref Range inp) const pure @trusted
+            public bool skip(Range)(ref Range inp) const
                 if (isRandomAccessRange!Range && is(ElementType!Range : wchar))
             {
                 enum mode = Mode.alwaysSkip;
@@ -5102,7 +5108,7 @@ template Utf16Matcher()
             }
         }
 
-        public bool test(Range)(ref Range inp) const pure @trusted
+        public bool test(Range)(ref Range inp) const
             if (isRandomAccessRange!Range && is(ElementType!Range : wchar))
         {
             enum mode = Mode.neverSkip;
@@ -5114,19 +5120,19 @@ template Utf16Matcher()
                 return lookupUni!mode(inp);
         }
 
-        bool match(C)(ref C[] str) const pure @trusted
+        bool match(C)(ref C[] str) const
             if (isSomeChar!C)
         {
             return fwdStr!"match"(str);
         }
 
-        bool skip(C)(ref C[] str) const pure @trusted
+        bool skip(C)(ref C[] str) const
             if (isSomeChar!C)
         {
             return fwdStr!"skip"(str);
         }
 
-        bool test(C)(ref C[] str) const pure @trusted
+        bool test(C)(ref C[] str) const
             if (isSomeChar!C)
         {
             return fwdStr!"test"(str);
@@ -5158,12 +5164,12 @@ template Utf16Matcher()
         }
         mixin DefMatcher;
 
-        package @property auto subMatcher(SizesToPick...)() @trusted
+        package @property CherryPick!(Impl, SizesToPick) subMatcher(SizesToPick...)()
         {
             return CherryPick!(Impl, SizesToPick)(&this);
         }
 
-        bool lookupUni(Mode mode, Range)(ref Range inp) const pure
+        bool lookupUni(Mode mode, Range)(ref Range inp) const
         {
             wchar x = cast(wchar)(inp[0] - 0xD800);
             //not a high surrogate
@@ -5234,10 +5240,10 @@ template Utf16Matcher()
 
         static if (sizeFlags & 1)
         {
-            @property ref ascii()() const pure{ return m.ascii; }
+            @property auto ascii()() const { return m.ascii; }
         }
 
-        bool lookupUni(Mode mode, Range)(ref Range inp) const pure
+        bool lookupUni(Mode mode, Range)(ref Range inp) const
         {
             return m.lookupUni!mode(inp);
         }
@@ -5247,12 +5253,12 @@ template Utf16Matcher()
     }
 }
 
-private auto utf8Matcher(Set)(Set set) @trusted
+private auto utf8Matcher(Set)(Set set)
 {
     return Utf8Matcher!().build(set);
 }
 
-private auto utf16Matcher(Set)(Set set) @trusted
+private auto utf16Matcher(Set)(Set set)
 {
     return Utf16Matcher!().build(set);
 }
@@ -5264,7 +5270,7 @@ private auto utf16Matcher(Set)(Set set) @trusted
 
     See $(LREF MatcherConcept) for API outline.
 */
-public auto utfMatcher(Char, Set)(Set set) @trusted
+public auto utfMatcher(Char, Set)(Set set)
 if (isCodepointSet!Set)
 {
     static if (is(Char : char))
@@ -5280,7 +5286,7 @@ if (isCodepointSet!Set)
 
 
 //a range of code units, packed with index to speed up forward iteration
-package auto decoder(C)(C[] s, size_t offset=0) @safe pure nothrow @nogc
+package auto decoder(C)(C[] s, size_t offset=0)
 if (is(C : wchar) || is(C : char))
 {
     static struct Decoder
@@ -5305,7 +5311,7 @@ if (is(C : wchar) || is(C : char))
     return Decoder(s, offset);
 }
 
-@safe unittest
+pure @safe unittest
 {
     string rs = "hi! ﾈемног砀 текста";
     auto codec = rs.decoder;
@@ -5360,10 +5366,10 @@ if (is(C : wchar) || is(C : char))
     assert(codec.idx == i);
 }
 
-@safe unittest
+pure @safe unittest
 {
     import std.range : stride;
-    static bool testAll(Matcher, Range)(ref Matcher m, ref Range r)
+    static bool testAll(Matcher, Range)(scope ref Matcher m, ref Range r)
     {
         bool t = m.test(r);
         auto save = r.idx;
@@ -5410,7 +5416,7 @@ if (is(C : wchar) || is(C : char))
 }
 
 // cover decode fail cases of Matcher
-@system unittest
+pure @system unittest
 {
     import std.algorithm.iteration : map;
     import std.exception : collectException;
@@ -5727,13 +5733,13 @@ template Sequence(size_t start, size_t end)
 template useItemAt(size_t idx, T)
 if (isIntegral!T || is(T: dchar))
 {
-    size_t impl(in T[] arr){ return arr[idx]; }
+    size_t impl(const scope T[] arr){ return arr[idx]; }
     alias useItemAt = assumeSize!(impl, 8*T.sizeof);
 }
 
 template useLastItem(T)
 {
-    size_t impl(in T[] arr){ return arr[$-1]; }
+    size_t impl(const scope T[] arr){ return arr[$-1]; }
     alias useLastItem = assumeSize!(impl, 8*T.sizeof);
 }
 
@@ -5932,7 +5938,7 @@ else
 {
 
 // helper for looking up code point sets
-@trusted ptrdiff_t findUnicodeSet(alias table, C)(in C[] name) pure
+ptrdiff_t findUnicodeSet(alias table, C)(const scope C[] name)
 {
     import std.algorithm.iteration : map;
     import std.range : assumeSorted;
@@ -5945,7 +5951,7 @@ else
 }
 
 // another one that loads it
-@trusted bool loadUnicodeSet(alias table, Set, C)(in C[] name, ref Set dest) pure
+bool loadUnicodeSet(alias table, Set, C)(const scope C[] name, ref Set dest)
 {
     auto idx = findUnicodeSet!table(name);
     if (idx >= 0)
@@ -5956,8 +5962,8 @@ else
     return false;
 }
 
-@trusted bool loadProperty(Set=CodepointSet, C)
-    (in C[] name, ref Set target) pure
+bool loadProperty(Set=CodepointSet, C)
+    (const scope C[] name, ref Set target) pure
 {
     import std.internal.unicode_tables : uniProps; // generated file
     alias ucmp = comparePropertyName;
@@ -6056,7 +6062,7 @@ else
 }
 
 // CTFE-only helper for checking property names at compile-time
-@safe bool isPrettyPropertyName(C)(in C[] name)
+@safe bool isPrettyPropertyName(C)(const scope C[] name)
 {
     import std.algorithm.searching : find;
     auto names = [
@@ -6076,7 +6082,7 @@ else
 }
 
 // ditto, CTFE-only, not optimized
-@safe private static bool findSetName(alias table, C)(in C[] name)
+@safe private static bool findSetName(alias table, C)(const scope C[] name)
 {
     return findUnicodeSet!table(name) >= 0;
 }
@@ -6084,7 +6090,7 @@ else
 template SetSearcher(alias table, string kind)
 {
     /// Run-time checked search.
-    static auto opCall(C)(in C[] name)
+    static auto opCall(C)(const scope C[] name)
         if (is(C : dchar))
     {
         import std.conv : to;
@@ -6113,7 +6119,7 @@ template SetSearcher(alias table, string kind)
 package alias Escapables = AliasSeq!('[', ']', '\\', '^', '$', '.', '|', '?', ',', '-',
     ';', ':', '#', '&', '%', '/', '<', '>', '`',  '*', '+', '(', ')', '{', '}',  '~');
 
-package @trusted auto memoizeExpr(string expr)()
+package CodepointSet memoizeExpr(string expr)()
 {
     if (__ctfe)
         return mixin(expr);
@@ -6129,7 +6135,7 @@ package @trusted auto memoizeExpr(string expr)()
 }
 
 //property for \w character class
-package @property @safe CodepointSet wordCharacter()
+package @property CodepointSet wordCharacter() @safe
 {
     return memoizeExpr!("unicode.Alphabetic | unicode.Mn | unicode.Mc
         | unicode.Me | unicode.Nd | unicode.Pc")();
@@ -6220,7 +6226,7 @@ auto caseEnclose(CodepointSet set)
 /+
     fetch codepoint set corresponding to a name (InBlock or binary property)
 +/
-@trusted CodepointSet getUnicodeSet(in char[] name, bool negated,  bool casefold)
+CodepointSet getUnicodeSet(const scope char[] name, bool negated,  bool casefold) @safe
 {
     CodepointSet s = unicode(name);
     //FIXME: caseEnclose for new uni as Set | CaseEnclose(SET && LC)
@@ -6231,7 +6237,7 @@ auto caseEnclose(CodepointSet set)
     return s;
 }
 
-@safe struct UnicodeSetParser(Range)
+struct UnicodeSetParser(Range)
 {
     import std.exception : enforce;
     import std.typecons : tuple, Tuple;
@@ -6744,7 +6750,7 @@ auto caseEnclose(CodepointSet set)
         See the $(S_LINK Unicode properties, table of properties) for available
         sets.
     */
-    static auto opCall(C)(in C[] name)
+    static auto opCall(C)(const scope C[] name)
         if (is(C : dchar))
     {
         return loadAny(name);
@@ -6916,7 +6922,7 @@ private:
             || (ucmp(name[0 .. 2],"In") == 0 && findSetName!(blocks.tab)(name[2..$]));
     }
 
-    static auto loadAny(Set=CodepointSet, C)(in C[] name) pure
+    static auto loadAny(Set=CodepointSet, C)(const scope C[] name) pure
     {
         import std.conv : to;
         import std.internal.unicode_tables : blocks, scripts; // generated file
@@ -7096,7 +7102,7 @@ public: // Public API continues
     Returns:
         length of grapheme cluster
 +/
-size_t graphemeStride(C)(in C[] input, size_t index)
+size_t graphemeStride(C)(const scope C[] input, size_t index)
 if (is(C : dchar))
 {
     auto src = input[index..$];
@@ -7224,7 +7230,7 @@ if (isInputRange!Range && is(Unqual!(ElementType!Range) == dchar))
 }
 
 // For testing non-forward-range input ranges
-version(StdUnittest)
+version(unittest)
 private static struct InputRangeString
 {
     private string s;
@@ -7395,14 +7401,14 @@ if (isInputRange!Range && is(Unqual!(ElementType!Range) == dchar))
 
     See_Also: $(LREF decodeGrapheme), $(LREF graphemeStride)
 +/
-@trusted struct Grapheme
+@safe struct Grapheme
 {
     import std.exception : enforce;
     import std.traits : isDynamicArray;
 
 public:
     /// Ctor
-    this(C)(in C[] chars...)
+    this(C)(const scope C[] chars...)
         if (is(C : dchar))
     {
         this ~= chars;
@@ -7417,7 +7423,7 @@ public:
     }
 
     /// Gets a $(CODEPOINT) at the given index in this cluster.
-    dchar opIndex(size_t index) const pure nothrow @nogc
+    dchar opIndex(size_t index) const @nogc nothrow pure @trusted
     {
         assert(index < length);
         return read24(isBig ? ptr_ : small_.ptr, index);
@@ -7430,7 +7436,7 @@ public:
         Use of this facility may invalidate grapheme cluster,
         see also $(LREF Grapheme.valid).
     +/
-    void opIndexAssign(dchar ch, size_t index) pure nothrow @nogc
+    void opIndexAssign(dchar ch, size_t index) @nogc nothrow pure @trusted
     {
         assert(index < length);
         write24(isBig ? ptr_ : small_.ptr, ch, index);
@@ -7453,19 +7459,19 @@ public:
         Warning: Invalidates when this Grapheme leaves the scope,
         attempts to use it then would lead to memory corruption.
     +/
-    SliceOverIndexed!Grapheme opSlice(size_t a, size_t b) pure nothrow @nogc
+    SliceOverIndexed!Grapheme opSlice(size_t a, size_t b) @nogc nothrow pure return
     {
         return sliceOverIndexed(a, b, &this);
     }
 
     /// ditto
-    SliceOverIndexed!Grapheme opSlice() pure nothrow @nogc
+    SliceOverIndexed!Grapheme opSlice() @nogc nothrow pure return
     {
         return sliceOverIndexed(0, length, &this);
     }
 
     /// Grapheme cluster length in $(CODEPOINTS).
-    @property size_t length() const pure nothrow @nogc
+    @property size_t length() const @nogc nothrow pure
     {
         return isBig ? len_ : slen_ & 0x7F;
     }
@@ -7478,7 +7484,7 @@ public:
 
         See_Also: $(LREF Grapheme.valid)
     +/
-    ref opOpAssign(string op)(dchar ch)
+    ref opOpAssign(string op)(dchar ch) @trusted
     {
         static if (op == "~")
         {
@@ -7560,7 +7566,7 @@ public:
         return r.length == 0;
     }
 
-    this(this) pure @nogc nothrow
+    this(this) @nogc nothrow pure @trusted
     {
         import core.exception : onOutOfMemoryError;
         import core.memory : pureMalloc;
@@ -7578,7 +7584,7 @@ public:
         }
     }
 
-    ~this() pure @nogc nothrow
+    ~this() @nogc nothrow pure @trusted
     {
         import core.memory : pureFree;
         if (isBig)
@@ -7612,7 +7618,7 @@ private:
         }
     }
 
-    void convertToBig() pure @nogc nothrow
+    void convertToBig() @nogc nothrow pure @trusted
     {
         import core.exception : onOutOfMemoryError;
         import core.memory : pureMalloc;
@@ -7631,13 +7637,13 @@ private:
         setBig();
     }
 
-    void setBig() pure nothrow @nogc { slen_ |= small_flag; }
+    void setBig() @nogc nothrow pure { slen_ |= small_flag; }
 
-    @property size_t smallLength() const pure nothrow @nogc
+    @property size_t smallLength() const @nogc nothrow pure
     {
         return slen_ & small_mask;
     }
-    @property ubyte isBig() const pure nothrow @nogc
+    @property ubyte isBig() const @nogc nothrow pure
     {
         return slen_ & small_flag;
     }
@@ -8683,7 +8689,7 @@ private auto splitNormalized(NormalizationForm norm, C)(const(C)[] input)
     return tuple(input.length, input.length);
 }
 
-private auto seekStable(NormalizationForm norm, C)(size_t idx, in C[] input)
+private auto seekStable(NormalizationForm norm, C)(size_t idx, const scope C[] input)
 {
     import std.typecons : tuple;
     import std.utf : codeLength;
@@ -9514,7 +9520,7 @@ if (is(C == char) || is(C == wchar)  || is(C == dchar))
 // helper to precalculate size of case-converted string
 private template toCaseLength(alias indexFn, uint maxIdx, alias tableFn)
 {
-    size_t toCaseLength(C)(in C[] str)
+    size_t toCaseLength(C)(const scope C[] str)
     {
         import std.utf : decode, codeLength;
         size_t codeLen = 0;
@@ -10332,7 +10338,7 @@ private:
     return CodepointSet.fromIntervals(decompressIntervals(compressed));
 }
 
-@safe pure nothrow auto asTrie(T...)(in TrieEntry!T e)
+@safe pure nothrow auto asTrie(T...)(const scope TrieEntry!T e)
 {
     return const(CodepointTrie!T)(e.offsets, e.sizes, e.data);
 }

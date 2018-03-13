@@ -44,38 +44,44 @@ version (CRuntime_Glibc)
     version = GCC_IO;
     version = HAS_GETDELIM;
 }
+else version (CRuntime_Bionic)
+{
+    version = GENERIC_IO;
+    version = HAS_GETDELIM;
+}
+else version (CRuntime_Musl)
+{
+    version = GENERIC_IO;
+    version = HAS_GETDELIM;
+}
+else version (CRuntime_UClibc)
+{
+    // uClibc supports GCC IO
+    version = GCC_IO;
+    version = HAS_GETDELIM;
+}
 
 version (OSX)
 {
     version = GENERIC_IO;
     version = HAS_GETDELIM;
 }
-
-version (FreeBSD)
+else version (FreeBSD)
 {
     version = GENERIC_IO;
     version = HAS_GETDELIM;
 }
-
-version (NetBSD)
+else version (NetBSD)
 {
     version = GENERIC_IO;
     version = HAS_GETDELIM;
 }
-
-version (DragonFlyBSD)
+else version (DragonFlyBSD)
 {
     version = GENERIC_IO;
     version = HAS_GETDELIM;
 }
-
-version (Solaris)
-{
-    version = GENERIC_IO;
-    version = NO_GETDELIM;
-}
-
-version (CRuntime_Bionic)
+else version (Solaris)
 {
     version = GENERIC_IO;
     version = NO_GETDELIM;
@@ -2981,8 +2987,17 @@ $(D Range) that locks the file and allows fast writing to it.
     }
 
     /**
+     * Output range which locks the file when created, and unlocks the file when it goes
+     * out of scope.
+     *
      * Returns: An $(REF_ALTTEXT output range, isOutputRange, std, range, primitives)
-     * that locks the file and allows fast writing to it.
+     * which accepts string types, `ubyte[]`, individual character types, and
+     * individual `ubyte`s.
+     *
+     * Note: Writing either arrays of `char`s or `ubyte`s is faster than
+     * writing each character individually from a range. For large amounts of data,
+     * writing the contents in chunks using an intermediary array can result
+     * in a speed increase.
      *
      * Throws: $(REF UTFException, std, utf) if the data given is a `char` range
      * and it contains malformed UTF data.
@@ -5273,7 +5288,7 @@ version(linux)
     }
 }
 
-version(StdUnittest) string testFilename(string file = __FILE__, size_t line = __LINE__) @safe
+version(unittest) string testFilename(string file = __FILE__, size_t line = __LINE__) @safe
 {
     import std.conv : text;
     import std.file : deleteme;

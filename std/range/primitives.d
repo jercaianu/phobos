@@ -107,9 +107,10 @@ Source: $(PHOBOSSRC std/range/_primitives.d)
 
 License: $(HTTP boost.org/LICENSE_1_0.txt, Boost License 1.0).
 
-Authors: $(HTTP erdani.com, Andrei Alexandrescu), David Simcha,
-and Jonathan M Davis. Credit for some of the ideas in building this module goes
-to $(HTTP fantascienza.net/leonardo/so/, Leonardo Maffi).
+Authors: $(HTTP erdani.com, Andrei Alexandrescu), David Simcha, and
+         $(HTTP jmdavisprog.com, Jonathan M Davis). Credit for some of the ideas
+         in building this module goes to
+         $(HTTP fantascienza.net/leonardo/so/, Leonardo Maffi).
 */
 module std.range.primitives;
 
@@ -2121,7 +2122,7 @@ if (!isNarrowString!(T[]) && !is(T[] == void[]))
     assert(a == [ 2, 3 ]);
 }
 
-version(StdUnittest)
+version(unittest)
 {
     static assert(!is(typeof({          int[4] a; popFront(a); })));
     static assert(!is(typeof({ immutable int[] a; popFront(a); })));
@@ -2242,7 +2243,7 @@ if (!isNarrowString!(T[]) && !is(T[] == void[]))
     assert(a == [ 1, 2 ]);
 }
 
-version(StdUnittest)
+version(unittest)
 {
     static assert(!is(typeof({ immutable int[] a; popBack(a); })));
     static assert(!is(typeof({          int[4] a; popBack(a); })));
