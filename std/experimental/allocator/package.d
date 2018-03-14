@@ -1151,6 +1151,8 @@ struct TypeAllocator(T)
 
     void initAlloc(SharedAscendingPageAllocator* rootAlloc)
     {
+        import std.stdio;
+        writeln("initalloc");
         laa.allocatorForSize!(1 << 16) = rootAlloc;
         laa.allocatorForSize!(1 << 15).parent = rootAlloc;
         laa.allocatorForSize!(1 << 14).parent = rootAlloc;
@@ -1212,95 +1214,6 @@ struct ThreadLocalAllocator
     }
 }
 __gshared SharedAscendingPageAllocator rootAllocator;
-
-void main()
-{
-    import std.stdio;
-    rootAllocator = SharedAscendingPageAllocator(1UL << 40);
-    ThreadLocalAllocator tla;
-
-    import std.experimental.allocator.building_blocks.aligned_block_list;
-    import std.experimental.allocator.building_blocks.bitmapped_block;
-    import std.experimental.allocator.building_blocks.region;
-    import std.experimental.allocator.building_blocks.ascending_page_allocator;
-    import std.experimental.allocator.mallocator;
-    import std.random;
-    import std.algorithm.sorting : sort;
-    import core.thread : ThreadGroup;
-    import core.internal.spinlock : SpinLock;
-
-    enum pageSize = 4096;
-    enum numThreads = 2;
-    enum maxIter = 5000;
-    enum numAllocs = 5000;
-    size_t count = 0;
-    SpinLock lock = SpinLock(SpinLock.Contention.brief);
-
-    enum totalAllocs = maxIter * numAllocs;
-
-    enum smallTest = 0;
-    enum largeTest = 1;
-
-    struct MediumStruct
-    {
-        int[100] arr;
-    }
-
-    alias T = MediumStruct;
-
-    void fun()
-    {
-        ThreadLocalAllocator tla;
-        //alias tla = Mallocator.instance;
-        ulong id;
-        lock.lock();
-        id = count++;
-        lock.unlock;
-        auto rnd = Random(1000);
-        T[][numAllocs] largeAllocs;
-        T*[numAllocs] smallAllocs;
-
-        static if (smallTest)
-        {
-            for (int i = 0; i < maxIter; i++)
-            {
-                for (int j = 0; j < numAllocs; j++)
-                {
-                    smallAllocs[j] = tla.make!T;
-                    *smallAllocs[j] = T.init;
-                }
-
-                for (int j = 0; j < numAllocs; j++)
-                {
-                    tla.dispose(smallAllocs[j]);
-                }
-            }
-        }
-
-        static if (largeTest)
-        {
-            for (int i = 0; i < maxIter; i++)
-            {
-                int arrSize = uniform(10, 20, rnd);
-                for (int j = 0; j < numAllocs; j++)
-                {
-                    largeAllocs[j] = tla.makeArray!T(arrSize);
-                    for (int k = 0; k < largeAllocs[j].length; k++)
-                        largeAllocs[j][k] = T.init;
-                }
-
-                for (int j = 0; j < numAllocs; j++)
-                    tla.dispose(largeAllocs[j]);
-            }
-        }
-    }
-    auto tg = new ThreadGroup;
-    foreach (i; 0 .. numThreads)
-    {
-        tg.create(&fun);
-    }
-    tg.joinAll();
-}
 
 
 /**

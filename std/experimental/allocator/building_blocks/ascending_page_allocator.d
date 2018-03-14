@@ -4,6 +4,8 @@ Source: $(PHOBOSSRC std/experimental/allocator/building_blocks/_ascending_page_a
 */
 module std.experimental.allocator.building_blocks.ascending_page_allocator;
 import std.experimental.allocator.common;
+import std.experimental.allocator;
+import std.experimental.allocator.building_blocks.aligned_block_list;
 
 // Common implementations for shared and thread local AscendingPageAllocator
 private mixin template AscendingPageAllocatorImpl(bool isShared)
@@ -165,7 +167,7 @@ version (StdDdoc)
     /**
     `AscendingPageAllocator` is a fast and safe allocator that rounds all allocations
     to multiples of the system's page size. It reserves a range of virtual addresses
-5    addresses.
+    addresses.
 
     When a chunk of memory is requested, the allocator finds a range of
     virtual pages that satisfy the requested size, changing their protection to
@@ -598,7 +600,6 @@ else
                     return null;
                 }
             }
-
             lock.unlock();
 
             return cast(void[]) localResult[0 .. n];

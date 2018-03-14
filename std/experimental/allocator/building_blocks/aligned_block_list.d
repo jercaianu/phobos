@@ -9,8 +9,7 @@ import std.datetime.stopwatch;
 
 enum timeDbg = 0;
 
-
-StopWatch swPageAlloc;
+__gshared StopWatch swPageAlloc;
 StopWatch swBitAlloc;
 StopWatch swFastTrack;
 StopWatch swSlowTrack;
@@ -93,6 +92,7 @@ private:
 
         import std.stdio;
         void[] buf = parent.alignedAllocate(alignment, alignment);
+
         if (buf is null)
         {
             import std.stdio;
@@ -102,13 +102,9 @@ private:
 
         auto localRoot = cast(AlignedBlockNode*) root;
         auto newNode = cast(AlignedBlockNode*) buf;
-        static if (timeDbg)
-        swPageAlloc.start();
         ubyte[] payload = ((cast(ubyte*) buf[AlignedBlockNode.sizeof .. $])[0 .. buf.length - AlignedBlockNode.sizeof]);
         //writeln("here bro");
         newNode.bAlloc = Allocator(payload);
-        static if (timeDbg)
-        swPageAlloc.stop();
 
         newNode.next = localRoot;
         newNode.prev = null;
