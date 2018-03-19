@@ -302,6 +302,7 @@ module std.experimental.allocator.building_blocks;
 
 public import
     std.experimental.allocator.building_blocks.affix_allocator,
+    std.experimental.allocator.building_blocks.aligned_block_list,
     std.experimental.allocator.building_blocks.allocator_list,
     std.experimental.allocator.building_blocks.ascending_page_allocator,
     std.experimental.allocator.building_blocks.bucketizer,
