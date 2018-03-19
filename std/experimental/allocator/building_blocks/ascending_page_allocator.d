@@ -5,7 +5,6 @@ Source: $(PHOBOSSRC std/experimental/allocator/building_blocks/_ascending_page_a
 module std.experimental.allocator.building_blocks.ascending_page_allocator;
 import std.experimental.allocator.common;
 import std.experimental.allocator;
-import std.experimental.allocator.building_blocks.aligned_block_list;
 
 // Common implementations for shared and thread local AscendingPageAllocator
 private mixin template AscendingPageAllocatorImpl(bool isShared)
@@ -518,6 +517,8 @@ else
 {
     shared struct SharedAscendingPageAllocator
     {
+    nothrow @nogc:
+
         import std.typecons : Ternary;
         import core.internal.spinlock : SpinLock;
 
@@ -596,7 +597,6 @@ else
             {
                 if (!extendMemoryProtection(localOldLimit, localExtraAlloc)) {
                     import std.stdio;
-                    writeln("it was that moment jackson knew, he fucked up");
                     return null;
                 }
             }
@@ -662,7 +662,7 @@ else
     }
 }
 
-version(StdUnittest)
+version (StdUnittest)
 {
     static void testrw(void[] b) @nogc nothrow
     {

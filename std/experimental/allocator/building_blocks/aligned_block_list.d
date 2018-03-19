@@ -5,16 +5,6 @@ import std.experimental.allocator.building_blocks.stats_collector;
 import std.experimental.allocator.building_blocks.bitmapped_block;
 import std.experimental.allocator.building_blocks.null_allocator;
 import std.experimental.allocator.building_blocks.region;
-import std.datetime.stopwatch;
-
-enum timeDbg = 0;
-
-__gshared StopWatch swPageAlloc;
-StopWatch swBitAlloc;
-StopWatch swFastTrack;
-StopWatch swSlowTrack;
-
-int repeatLoop = 0;
 
 // Common function implementation for thread local and shared AlignedBlockList
 private mixin template AlignedBlockListImpl(bool isShared)
@@ -43,6 +33,7 @@ private:
 
     AlignedBlockNode *root;
     int numNodes;
+    enum maxNodes = 10;
 
     static if (isShared)
     SpinLock lock = SpinLock(SpinLock.Contention.brief);
@@ -90,20 +81,13 @@ private:
         static if (isShared)
         import core.atomic : atomicOp;
 
-        import std.stdio;
         void[] buf = parent.alignedAllocate(alignment, alignment);
-
         if (buf is null)
-        {
-            import std.stdio;
-            writeln("bad alignment");
             return false;
-        }
 
         auto localRoot = cast(AlignedBlockNode*) root;
         auto newNode = cast(AlignedBlockNode*) buf;
-        ubyte[] payload = ((cast(ubyte*) buf[AlignedBlockNode.sizeof .. $])[0 .. buf.length - AlignedBlockNode.sizeof]);
-        //writeln("here bro");
+        ubyte[] payload = cast(ubyte[]) buf[AlignedBlockNode.sizeof .. $];
         newNode.bAlloc = Allocator(payload);
 
         newNode.next = localRoot;
@@ -127,6 +111,7 @@ private:
 public:
     static if (stateSize!ParentAllocator) ParentAllocator parent;
     else alias parent = ParentAllocator.instance;
+
     enum ulong alignment = theAlignment;
 
     static if (hasMember!(ParentAllocator, "owns"))
@@ -181,24 +166,13 @@ public:
         while (tmp)
         {
             auto next = tmp.next;
-            loopCount++;
-            if (loopCount == 2)
-                repeatLoop++;
             static if (isShared)
             {
                 tmp.keepAlive++;
                 lock.unlock();
             }
 
-            static if (timeDbg)
-            swBitAlloc.start();
             auto result = tmp.bAlloc.allocate(n);
-            static if (timeDbg)
-            swBitAlloc.stop();
-
-            static if (timeDbg)
-            swFastTrack.start();
-
             if (result.length == n)
             {
                 static if (isShared)
@@ -218,9 +192,6 @@ public:
                     tmp.keepAlive--;
                     lock.unlock();
                 }
-                static if (timeDbg)
-                swFastTrack.stop();
-
                 return result;
             }
 
@@ -233,7 +204,7 @@ public:
             // This node has no fresh memory available doesn't hold alive objects, remove it
             static if (isShared)
             {
-                if (atomicLoad(numNodes) > 10 &&
+                if (atomicLoad(numNodes) > maxNodes &&
                     atomicLoad(tmp.bytesUsed) == 0 &&
                     tmp.keepAlive == 0)
                 {
@@ -244,7 +215,7 @@ public:
             }
             else
             {
-                if (numNodes > 10 && tmp.bytesUsed == 0)
+                if (numNodes > maxNodes && tmp.bytesUsed == 0)
                 {
                     removeNode(tmp);
                     if (!root)
@@ -253,8 +224,6 @@ public:
             }
 
             tmp = next;
-            static if (timeDbg)
-            swFastTrack.stop();
         }
 
         if (!insertNewNode())
@@ -262,20 +231,10 @@ public:
             static if (isShared)
             lock.unlock();
 
-            static if (timeDbg)
-            swFastTrack.stop();
             return null;
         }
 
-        static if (timeDbg)
-        swFastTrack.stop();
-
-        static if (timeDbg)
-        swBitAlloc.start();
         void[] result = (cast(AlignedBlockNode*) root).bAlloc.allocate(n);
-        static if (timeDbg)
-        swBitAlloc.stop();
-
         static if (isShared)
         {
             atomicOp!"+="(root.bytesUsed, result.length);
@@ -297,25 +256,21 @@ public:
 }
 
 /**
-`AlignedBlockList` is a safe and fast allocator for small objects, under certain constraints.
-If `ParentAllocator` implements `alignedAllocate`, and always returns fresh memory,
-`AlignedBlockList` will eliminate undefined behaviour (by not reusing memory),
-at the cost of higher fragmentation.
-
-The allocator holds internally a doubly linked list of `BitmappedBlock`, which will serve allocations
+`AlignedBlockList` represents a wrapper around a chain of allocators, allowing for fast deallocations
+and preserving a low degree of fragmentation.
+The allocator holds internally a doubly linked list of `Allocator` objects, which will serve allocations
 in a most-recently-used fashion. Most recent allocators used for `allocate` calls, will be
 moved to the front of the list.
 
 Although allocations are in theory served in linear searching time, `deallocate` calls take
-$(BIGOH 1) time, by using aligned allocations. All `BitmappedBlock` are allocated at the alignment given
-as template parameter `theAlignment`. For a given pointer, this allows for quickly finding
-the `BitmappedBlock` owner using basic bitwise operations. The recommended alignment is 4MB or 8MB.
+$(BIGOH 1) time, by using aligned allocations. All `Allocator` objects are allocated at the alignment given
+as template parameter `theAlignment`.
 
 The ideal use case for this allocator is in conjunction with `AscendingPageAllocator`, which
 always returns fresh memory on aligned allocations and `Segregator` for multiplexing across a wide
 range of block sizes.
 */
-struct AlignedBlockList(Allocator, ParentAllocator, ulong theAlignment = (1 << 23))
+struct AlignedBlockList(Allocator, ParentAllocator, ulong theAlignment = (1 << 21))
 {
     version (StdDdoc)
     {
@@ -323,7 +278,7 @@ struct AlignedBlockList(Allocator, ParentAllocator, ulong theAlignment = (1 << 2
         import std.traits : hasMember;
 
         /**
-        Returns a fresh chunk of memory of size `n`.
+        Returns a chunk of memory of size `n`
         It finds the first node in the `AlignedBlockNode` list which has available memory,
         and moves it to the front of the list.
 
@@ -333,9 +288,10 @@ struct AlignedBlockList(Allocator, ParentAllocator, ulong theAlignment = (1 << 2
         void[] allocate(size_t n);
 
         /**
-        Marks for the given buffer for deallocation.
-        The actual memory is deallocated only when all memory inside the corresponding
-        `BitmappedBlock` is marked for deallocation.
+        Deallocates the buffer `b` given as parameter. Deallocations take place in constant
+        time, regardless of the number of nodes in the list. `b.ptr` is rounded down
+        to the nearest multiple of the `alignment` to quickly find the corresponding
+        `AlignedBlockNode`.
         */
         bool deallocate(void[] b);
 
@@ -348,6 +304,8 @@ struct AlignedBlockList(Allocator, ParentAllocator, ulong theAlignment = (1 << 2
     }
     else
     {
+        import std.math : isPowerOf2;
+        static assert (isPowerOf2(alignment));
         mixin AlignedBlockListImpl!false;
     }
 }
@@ -363,7 +321,7 @@ shared struct SharedAlignedBlockList(Allocator, ParentAllocator, ulong theAlignm
         import std.traits : hasMember;
 
         /**
-        Returns a fresh chunk of memory of size `n`.
+        Returns a chunk of memory of size `n`
         It finds the first node in the `AlignedBlockNode` list which has available memory,
         and moves it to the front of the list.
 
@@ -373,9 +331,10 @@ shared struct SharedAlignedBlockList(Allocator, ParentAllocator, ulong theAlignm
         void[] allocate(size_t n);
 
         /**
-        Marks for the given buffer for deallocation.
-        The actual memory is deallocated only when all memory inside the corresponding
-        `BitmappedBlock` is marked for deallocation.
+        Deallocates the buffer `b` given as parameter. Deallocations take place in constant
+        time, regardless of the number of nodes in the list. `b.ptr` is rounded down
+        to the nearest multiple of the `alignment` to quickly find the corresponding
+        `AlignedBlockNode`.
         */
         bool deallocate(void[] b);
 
@@ -388,6 +347,8 @@ shared struct SharedAlignedBlockList(Allocator, ParentAllocator, ulong theAlignm
     }
     else
     {
+        import std.math : isPowerOf2;
+        static assert (isPowerOf2(alignment));
         mixin AlignedBlockListImpl!true;
     }
 }
@@ -550,7 +511,10 @@ version (unittest)
     size_t count = 0;
     SpinLock lock = SpinLock(SpinLock.Contention.brief);
 
-    alias SuperAllocator = SharedAlignedBlockList!(SharedRegion!(NullAllocator, 1), SharedAscendingPageAllocator, 1 << 16);
+    alias SuperAllocator = SharedAlignedBlockList!(
+        SharedRegion!(NullAllocator, 1),
+        SharedAscendingPageAllocator,
+        1 << 16);
     void[][totalAllocs] buf;
 
     SuperAllocator a;
@@ -590,170 +554,3 @@ version (unittest)
         assert(a.deallocate(buf[totalAllocs - 1 - i]));
     }
 }
-
-/*
-void main()
-{
-    import std.experimental.allocator.building_blocks.ascending_page_allocator;
-    import std.experimental.allocator.building_blocks.segregator;
-    import std.experimental.allocator.mallocator;
-    import std.random;
-    import core.thread : ThreadGroup;
-    import core.internal.spinlock : SpinLock;
-    import std.stdio;
-
-    static void testrw(void[] b)
-    {
-        ubyte* buf = cast(ubyte*) b.ptr;
-        size_t len = (b.length).roundUpToMultipleOf(4096);
-        for (int i = 0; i < len; i += 4096)
-        {
-            buf[i] =  (cast(ubyte)i % 256);
-            assert(buf[i] == (cast(ubyte)i % 256));
-        }
-    }
-
-    alias SharedBitmappedBlock = BitmappedBlock2;
-    alias SharedAscendingPageAllocator = AscendingPageAllocator;
-    alias SharedAlignedBlockList = AlignedBlockList;
-    alias SuperAllocator = Segregator!(
-        8,
-        SharedAlignedBlockList!(SharedBitmappedBlock!8, SharedAscendingPageAllocator*, 1 << 12),
-        Segregator!(
-
-        16,
-        SharedAlignedBlockList!(SharedBitmappedBlock!16, SharedAscendingPageAllocator*, 1 << 12),
-        Segregator!(
-
-        32,
-        SharedAlignedBlockList!(SharedBitmappedBlock!32, SharedAscendingPageAllocator*, 1 << 13),
-        Segregator!(
-
-        64,
-        SharedAlignedBlockList!(SharedBitmappedBlock!64, SharedAscendingPageAllocator*, 1 << 14),
-        Segregator!(
-
-        128,
-        SharedAlignedBlockList!(SharedBitmappedBlock!128, SharedAscendingPageAllocator*, 1 << 15),
-        Segregator!(
-
-        256,
-        SharedAlignedBlockList!(SharedBitmappedBlock!256, SharedAscendingPageAllocator*, 1 << 16),
-        Segregator!(
-
-        512,
-        SharedAlignedBlockList!(SharedBitmappedBlock!512, SharedAscendingPageAllocator*, 1 << 17),
-        Segregator!(
-
-        1024,
-        SharedAlignedBlockList!(SharedBitmappedBlock!1024, SharedAscendingPageAllocator*, 1 << 18),
-        Segregator!(
-
-        2048,
-        SharedAlignedBlockList!(SharedBitmappedBlock!2048, SharedAscendingPageAllocator*, 1 << 19),
-        Segregator!(
-
-        1 << 12,
-        SharedAlignedBlockList!(SharedBitmappedBlock!(1 << 12), SharedAscendingPageAllocator*, 1 << 20),
-        Segregator!(
-
-        1 << 13,
-        SharedAlignedBlockList!(SharedBitmappedBlock!(1 << 13), SharedAscendingPageAllocator*, 1 << 21),
-        Segregator!(
-
-        1 << 14,
-        SharedAlignedBlockList!(SharedBitmappedBlock!(1 << 14), SharedAscendingPageAllocator*, 1 << 22),
-        Segregator!(
-
-        1 << 15,
-        SharedAlignedBlockList!(SharedBitmappedBlock!(1 << 15), SharedAscendingPageAllocator*, 1 << 23),
-        SharedAscendingPageAllocator*
-        )))))))))))));
-
-    enum myAlloc = 0;
-    static if (myAlloc)
-    {
-        SuperAllocator a;
-        auto pageAlloc = SharedAscendingPageAllocator(1UL << 40);
-        a.allocatorForSize!(1 << 16) = &pageAlloc;
-        a.allocatorForSize!(1 << 15).parent = &pageAlloc;
-        a.allocatorForSize!(1 << 14).parent = &pageAlloc;
-        a.allocatorForSize!(1 << 13).parent = &pageAlloc;
-        a.allocatorForSize!(1 << 12).parent = &pageAlloc;
-        a.allocatorForSize!2048.parent = &pageAlloc;
-        a.allocatorForSize!1024.parent = &pageAlloc;
-        a.allocatorForSize!512.parent = &pageAlloc;
-        a.allocatorForSize!256.parent = &pageAlloc;
-        a.allocatorForSize!128.parent = &pageAlloc;
-        a.allocatorForSize!64.parent = &pageAlloc;
-        a.allocatorForSize!32.parent = &pageAlloc;
-        a.allocatorForSize!16.parent = &pageAlloc;
-        a.allocatorForSize!8.parent = &pageAlloc;
-    }
-    else
-    {
-        alias a = Mallocator.instance;
-    }
-
-    auto rnd = Random(1000);
-    auto swDirty = StopWatch(AutoStart.no);
-    auto swDealloc = StopWatch(AutoStart.no);
-    auto swShuffle = StopWatch(AutoStart.no);
-    swBitAlloc = StopWatch(AutoStart.no);
-    swPageAlloc = StopWatch(AutoStart.no);
-    swFastTrack = StopWatch(AutoStart.no);
-    swFastTrack.reset();
-
-    size_t maxIter = 10000;
-    enum testNum = 10000;
-    void[][testNum] buf;
-    size_t pageSize = 4096;
-    for (int i = 0; i < maxIter; i ++)
-    {
-        foreach (j; 0 .. testNum)
-        {
-            size_t size;
-            auto allocationType = uniform(7, 10, rnd);
-            if (allocationType <= 6) size = uniform(3, 7, rnd);
-            else if (allocationType <= 9) size = uniform(7, 16, rnd);
-            else size = 17;
-
-            buf[j] = a.allocate(1 << size);
-
-            assert(buf[j].length == (1 << size));
-
-            static if (timeDbg)
-            swDirty.start();
-            testrw(buf[j]);
-            static if (timeDbg)
-            swDirty.stop();
-        }
-
-        static if (timeDbg)
-        swShuffle.start();
-        randomShuffle(buf[]);
-        static if (timeDbg)
-        swShuffle.stop();
-
-        static if (timeDbg)
-        swDealloc.start();
-        foreach (j; 0 .. testNum)
-        {
-            assert(a.deallocate(buf[j]));
-        }
-        static if (timeDbg)
-        swDealloc.stop();
-    }
-
-    static if (timeDbg)
-    {
-        writeln("FastTrack time totals: ", swFastTrack.peek().toString());
-        writeln("Deallocation time totals: ", swDealloc.peek().toString());
-        writeln("Dirty time totals: ", swDirty.peek().toString());
-        writeln("BitmappedBlock time totals: ", swBitAlloc.peek().toString());
-        writeln("AscendingPage time totals: ", swPageAlloc.peek().toString());
-    }
-    writeln("Percentage of retries is: ", (cast(double) repeatLoop) / (testNum * maxIter));
-
-}
-*/
