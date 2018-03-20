@@ -8,44 +8,8 @@ import std.experimental.allocator.building_blocks.null_allocator;
 import std.experimental.allocator.common;
 import std.typecons : Flag, Yes, No;
 
-/**
 
-$(D BitmappedBlock) implements a simple heap consisting of one contiguous area
-of memory organized in blocks, each of size $(D theBlockSize). A block is a unit
-of allocation. A bitmap serves as bookkeeping data, more precisely one bit per
-block indicating whether that block is currently allocated or not.
-
-Passing $(D NullAllocator) as $(D ParentAllocator) (the default) means user code
-manages allocation of the memory block from the outside; in that case
-$(D BitmappedBlock) must be constructed with a $(D void[]) preallocated block and
-has no responsibility regarding the lifetime of its support underlying storage.
-If another allocator type is passed, $(D BitmappedBlock) defines a destructor that
-uses the parent allocator to release the memory block. That makes the combination of $(D AllocatorList), $(D BitmappedBlock), and a back-end allocator such as $(D MmapAllocator) a simple and scalable solution for memory allocation.
-
-There are advantages to storing bookkeeping data separated from the payload
-(as opposed to e.g. using $(D AffixAllocator) to store metadata together with
-each allocation). The layout is more compact (overhead is one bit per block),
-searching for a free block during allocation enjoys better cache locality, and
-deallocation does not touch memory around the payload being deallocated (which
-is often cold).
-
-Allocation requests are handled on a first-fit basis. Although linear in
-complexity, allocation is in practice fast because of the compact bookkeeping
-representation, use of simple and fast bitwise routines, and caching of the
-first available block position. A known issue with this general approach is
-fragmentation, partially mitigated by coalescing. Since $(D BitmappedBlock) does
-not need to maintain the allocated size, freeing memory implicitly coalesces
-free blocks together. Also, tuning $(D blockSize) has a considerable impact on
-both internal and external fragmentation.
-
-The size of each block can be selected either during compilation or at run
-time. Statically-known block sizes are frequent in practice and yield slightly
-better performance. To choose a block size statically, pass it as the $(D
-blockSize) parameter as in $(D BitmappedBlock!(4096)). To choose a block
-size parameter, use $(D BitmappedBlock!(chooseAtRuntime)) and pass the
-block size to the constructor.
-
-*/
+// Common implementation for shared and non-shared versions of the BitmappedBlock
 private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
 {
     import std.conv : text;
@@ -57,22 +21,16 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
     import core.internal.spinlock : SpinLock;
 
     static assert(theBlockSize > 0 && theAlignment.isGoodStaticAlignment);
-    //static assert(theBlockSize == chooseAtRuntime || theBlockSize % theAlignment == 0, "Block size must be a multiple of the alignment");
+    static assert(theBlockSize == chooseAtRuntime || theBlockSize % theAlignment == 0, "Block size must be a multiple of the alignment");
 
-    /**
-    If $(D blockSize == chooseAtRuntime), $(D BitmappedBlock) offers a read/write
-    property $(D blockSize). It must be set before any use of the allocator.
-    Otherwise (i.e. $(D theBlockSize) is a legit constant), $(D blockSize) is
-    an alias for $(D theBlockSize). Whether constant or variable, must also be
-    a multiple of $(D alignment). This constraint is $(D assert)ed statically
-    and dynamically.
-    */
     static if (theBlockSize != chooseAtRuntime)
     {
         alias blockSize = theBlockSize;
     }
     else
     {
+        // It is the caller's responsibilty to synchronize this with
+        // allocate/deallocate in shared environments
         @property uint blockSize() { return _blockSize; }
         @property void blockSize(uint s)
         {
@@ -99,18 +57,8 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
         static assert(parentAlignment >= ulong.alignof);
     }
 
-    /**
-    The _alignment offered is user-configurable statically through parameter
-    $(D theAlignment), defaulted to $(D platformAlignment).
-    */
     alias alignment = theAlignment;
 
-    // state {
-    /**
-    The _parent allocator. Depending on whether $(D ParentAllocator) holds state
-    or not, this is a member variable or an alias for
-    `ParentAllocator.instance`.
-    */
     static if (stateSize!ParentAllocator)
     {
         ParentAllocator parent;
@@ -124,13 +72,13 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
     private void[] _payload;
     private size_t _startIdx;
 
+    // For multiblock, '_control' is a BitVector, otherwise just a regular ulong[]
     static if (multiBlock)
     {
         // Keeps track of first block which has never been used in an allocation.
         // All blocks which are located right to the '_freshBit', should have never been
         // allocated
         private ulong _freshBit;
-        // }
         private BitVector _control;
     }
     else
@@ -158,33 +106,15 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
         return leadingUlongs * 8 + maxSlack + blockSize * blocks;
     }
 
-    /**
-    Constructs a block allocator given a hunk of memory, or a desired capacity
-    in bytes.
-    $(UL
-    $(LI If `ParentAllocator` is $(REF_ALTTEXT `NullAllocator`, NullAllocator, std,experimental,allocator,building_blocks,null_allocator),
-    only the constructor taking `data` is defined and the user is responsible for freeing `data` if desired.)
-    $(LI Otherwise, both constructors are defined. The `data`-based
-    constructor assumes memory has been allocated with the parent allocator.
-    The `capacity`-based constructor uses `ParentAllocator` to allocate
-    an appropriate contiguous hunk of memory. Regardless of the constructor
-    used, the destructor releases the memory by using `ParentAllocator.deallocate`.)
-    )
-    */
     this(ubyte[] data)
     {
-        import std.stdio;
-
         immutable a = data.ptr.effectiveAlignment;
         assert(a >= size_t.alignof || !data.ptr,
             "Data must be aligned properly");
 
-        //writeln("x");
-        //writeln(1);
         immutable ulong totalBits = data.length * 8;
         immutable ulong bitsPerBlock = blockSize * 8 + 1;
         _blocks = totalBits / bitsPerBlock;
-        //writeln(2);
 
         // Reality is a bit more complicated, iterate until a good number of
         // blocks found.
@@ -200,6 +130,7 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
                 continue;
             }
 
+            // Need the casts for shared versions
             static if (multiBlock)
             {
                 _control = cast(typeof(_control)) BitVector((cast(ulong*) data.ptr)[0 .. controlWords]);
@@ -214,13 +145,10 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
             _payload = cast(typeof(_payload)) payload;
             break;
         }
-        //writeln(3);
 
         _blocks = cast(typeof(_blocks)) localBlocks;
-        //writeln(4);
     }
 
-    /// Ditto
     static if (chooseAtRuntime == theBlockSize)
     this(ubyte[] data, uint blockSize)
     {
@@ -228,7 +156,6 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
         this(data);
     }
 
-    /// Ditto
     static if (!is(ParentAllocator == NullAllocator))
     this(size_t capacity)
     {
@@ -238,7 +165,6 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
         assert(_blocks * blockSize >= capacity);
     }
 
-    /// Ditto
     static if (!is(ParentAllocator == NullAllocator) &&
         chooseAtRuntime == theBlockSize)
     this(size_t capacity, uint blockSize)
@@ -247,10 +173,6 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
         this(capacity);
     }
 
-    /**
-    If $(D ParentAllocator) is not $(D NullAllocator) and defines $(D
-    deallocate), the destructor is defined to deallocate the block held.
-    */
     static if (!is(ParentAllocator == NullAllocator)
         && hasMember!(ParentAllocator, "deallocate"))
     ~this()
@@ -265,9 +187,16 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
         }
         void* end = cast(void*) (_payload.ptr + _payload.length);
         parent.deallocate(start[0 .. end - start]);
-
     }
 
+    pure nothrow @safe @nogc
+    size_t goodAllocSize(size_t n)
+    {
+        return n.roundUpToMultipleOf(blockSize);
+    }
+
+    // Implementation of the 'multiBlock' BitmappedBlock
+    // For the shared version, the methods are protected by a common lock
     static if (multiBlock)
     {
         /*
@@ -318,20 +247,6 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
             // 64-bit words.
             return null;
         }
-    }
-
-    /**
-    Returns the actual bytes allocated when $(D n) bytes are requested, i.e.
-    $(D n.roundUpToMultipleOf(blockSize)).
-    */
-    pure nothrow @safe @nogc
-    size_t goodAllocSize(size_t n)
-    {
-        return n.roundUpToMultipleOf(blockSize);
-    }
-
-    static if (multiBlock)
-    {
 
         @trusted void[] allocate(const size_t s)
         {
@@ -343,18 +258,6 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
             return allocateImpl(s);
         }
 
-        /**
-        Allocates $(D s) bytes of memory and returns it, or $(D null) if memory
-        could not be allocated.
-
-        The following information might be of help with choosing the appropriate
-        block size. Actual allocation occurs in sizes multiple of the block size.
-        Allocating one block is the fastest because only one 0 bit needs to be
-        found in the metadata. Allocating 2 through 64 blocks is the next cheapest
-        because it affects a maximum of two $(D ulong)s in the metadata.
-        Allocations greater than 64 blocks require a multiword search through the
-        metadata.
-        */
         private @trusted void[] allocateImpl(const size_t s)
         {
             const blocks = s.divideRoundUp(blockSize);
@@ -405,15 +308,6 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
             return result.ptr ? result.ptr[0 .. s] : null;
         }
 
-        /**
-        Allocates `s` bytes of memory and returns it, or `null` if memory
-        could not be allocated.
-
-        `allocateFresh` behaves just like `allocate`, the only difference being that
-        this always returns unused(fresh) memory. Although there may still be available
-        space in the `BitmappedBlock`, `allocateFresh` could still return `null`,
-        because all the available blocks have been previously deallocated.
-        */
         @trusted void[] allocateFresh(const size_t s)
         {
             static if (isShared)
@@ -443,12 +337,6 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
             return result;
         }
 
-        /**
-        Allocates a block with specified alignment $(D a). The alignment must be a
-        power of 2. If $(D a <= alignment), function forwards to $(D allocate).
-        Otherwise, it attempts to overallocate and then adjust the result for
-        proper alignment. In the worst case the slack memory is around two blocks.
-        */
         void[] alignedAllocate(size_t n, uint a)
         {
             static if (isShared)
@@ -705,6 +593,7 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
             {
                 ulong localControl = _control.rep[wordIdx];
                 localControl |= ~mask;
+                _control.rep[wordIdx] = localControl;
             }
             else
             {
@@ -713,19 +602,25 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
             return true;
         }
 
-        /**
-        Expands an allocated block in place.
-        */
-        nothrow @trusted @nogc
-        bool expand(ref void[] b, immutable size_t delta)
+        // Since the lock is not pure, only the single threaded 'expand' is pure
+        static if (isShared)
         {
-            static if (isShared)
+            nothrow @trusted @nogc
+            bool expand(ref void[] b, immutable size_t delta)
             {
                 lock.lock();
                 scope(exit) lock.unlock();
-            }
 
-            return expandImpl(b, delta);
+                return expandImpl(b, delta);
+            }
+        }
+        else
+        {
+            pure nothrow @trusted @nogc
+            bool expand(ref void[] b, immutable size_t delta)
+            {
+                return expandImpl(b, delta);
+            }
         }
 
         pure nothrow @trusted @nogc
@@ -769,9 +664,6 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
             return true;
         }
 
-        /**
-        Reallocates a previously-allocated block. Contractions occur in place.
-        */
         @system bool reallocate(ref void[] b, size_t newSize)
         {
             static if (isShared)
@@ -821,9 +713,6 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
             return slowReallocate(this, b, newSize);
         }
 
-        /**
-        Reallocates a block previously allocated with $(D alignedAllocate). Contractions do not occur in place.
-        */
         @system bool alignedReallocate(ref void[] b, size_t newSize, uint a)
         {
             static if (isShared)
@@ -862,9 +751,6 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
             return slowAlignedReallocate(this, b, newSize, a);
         }
 
-        /**
-        Deallocates a block previously allocated with this allocator.
-        */
         nothrow @nogc
         bool deallocate(void[] b)
         {
@@ -960,40 +846,49 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
             return true;
         }
 
-        /**
-        Forcibly deallocates all memory allocated by this allocator, making it
-        available for further allocations. Does not return memory to $(D
-        ParentAllocator).
-        */
-        nothrow @nogc
-        bool deallocateAll()
+        // Since the lock is not pure, only the single threaded version is pure
+        static if (isShared)
         {
-            static if (isShared)
+            nothrow @nogc
+            bool deallocateAll()
             {
                 lock.lock();
                 scope(exit) lock.unlock();
-            }
 
-            (cast(BitVector) _control)[] = 0;
-            _startIdx = 0;
-            return true;
+                (cast(BitVector) _control)[] = 0;
+                _startIdx = 0;
+                return true;
+            }
+        }
+        else
+        {
+            pure nothrow @nogc
+            bool deallocateAll()
+            {
+                _control[] = 0;
+                _startIdx = 0;
+                return true;
+            }
         }
 
-        /**
-        Returns `Ternary.yes` if no memory is currently allocated with this
-        allocator, otherwise `Ternary.no`. This method never returns
-        `Ternary.unknown`.
-        */
-        nothrow @safe @nogc
-        Ternary empty()
+        static if (isShared)
         {
-            static if (isShared)
+            nothrow @safe @nogc
+            Ternary empty()
             {
                 lock.lock();
                 scope(exit) lock.unlock();
-            }
 
-            return emptyImpl();
+                return emptyImpl();
+            }
+        }
+        else
+        {
+            pure nothrow @safe @nogc
+            Ternary empty()
+            {
+                return Ternary(_control.allAre0());
+            }
         }
 
         pure nothrow @trusted @nogc
@@ -1002,7 +897,8 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
             return Ternary((cast(BitVector) _control).allAre0());
         }
 
-        void dump()
+        // Debug helper
+        private void dump()
         {
             import std.stdio : writefln, writeln;
 
@@ -1039,11 +935,6 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
             }
         }
 
-        /**
-        If the $(D BitmappedBlock) object is empty (has no active allocation), allocates
-        all memory within and returns a slice to it. Otherwise, returns $(D null)
-        (i.e. no attempt is made to allocate the largest available block).
-        */
         void[] allocateAll()
         {
             static if (isShared)
@@ -1060,41 +951,22 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
     // Single block implementation
     else
     {
-        /**
-        Allocates `s` bytes of memory and returns it, or `null` if memory
-        could not be allocated.
-
-        The `SharedBitmappedBlock` cannot allocate more than the given block size.
-        Allocations are satisfied by searching the first unset bit in the bitmap,
-        and atomically setting it.
-        In rare memory pressure scenarios, the allocation could fail.
-        */
         static if (isShared)
         {
             @trusted void[] allocate(const size_t s)
             {
                 import core.atomic : cas, atomicLoad, atomicOp;
+                import core.bitop : bsr;
+                import std.range : iota;
+                import std.algorithm.iteration : map;
+                import std.array : array;
 
                 if (s.divideRoundUp(blockSize) != 1)
                     return null;
 
                 // First zero bit position for all values in the 0 - 255 range
                 // for fast lookup
-                static ubyte[] firstZero = [
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-                    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-                    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-                    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2,
-                    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
-                    2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
-                    4, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 6, 6, 7
-                ];
+                static immutable ubyte[255] firstZero = iota(255U).map!(x => (7 - (bsr((~x) & 0x000000ff)))).array;
 
                 foreach (size_t i; 0 .. _control.length)
                 {
@@ -1139,33 +1011,22 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
         {
             @trusted void[] allocate(const size_t s)
             {
-                import core.atomic : cas, atomicLoad, atomicOp;
+                import core.bitop : bsr;
+                import std.range : iota;
+                import std.algorithm.iteration : map;
+                import std.array : array;
 
                 if (s.divideRoundUp(blockSize) != 1)
                     return null;
 
                 // First zero bit position for all values in the 0 - 255 range
                 // for fast lookup
-                static ubyte[] firstZero = [
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-                    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-                    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-                    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2,
-                    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
-                    2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
-                    4, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 6, 6, 7
-                ];
+                static immutable ubyte[255] firstZero = iota(255U).map!(x => (7 - (bsr((~x) & 0x000000ff)))).array;
 
                 _startIdx = (_startIdx + 1) % _control.length;
-                for (size_t idx = _startIdx; idx < _startIdx + _control.length; idx++)
+                foreach (size_t idx; 0 .. _control.length)
                 {
-                    size_t i = idx % _control.length;
+                    size_t i = (idx + _startIdx) % _control.length;
                     size_t bitIndex = 0;
                     // skip all control words which have all bits set
                     if (_control[i] == ulong.max)
@@ -1197,10 +1058,7 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
             }
         }
 
-        /**
-        Deallocates the given buffer `b`, by atomically setting the corresponding
-        bit to `0`. `b` must be valid, and cannot contain multiple adjacent `blocks`.
-        */
+        nothrow @nogc
         bool deallocate(void[] b)
         {
             static if (isShared)
@@ -1209,7 +1067,6 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
             if (b is null)
                 return true;
 
-            import std.stdio;
             auto blockIndex = (b.ptr - _payload.ptr) / blockSize;
             auto controlIndex = blockIndex / 64;
             auto bitIndex = blockIndex % 64;
@@ -1225,10 +1082,7 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
             return true;
         }
 
-        /**
-        Expands in place a buffer previously allocated by `SharedBitmappedBlock`.
-        Expansion fails if the new length exceeds the block size.
-        */
+        pure nothrow @trusted @nogc
         bool expand(ref void[] b, immutable size_t delta)
         {
             if (delta == 0)
@@ -1243,11 +1097,6 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
         }
     }
 
-    /**
-    Returns `Ternary.yes` if `b` belongs to the `BitmappedBlock` object,
-    `Ternary.no` otherwise. Never returns `Ternary.unkown`. (This
-    method is somewhat tolerant in that accepts an interior slice.)
-    */
     pure nothrow @trusted @nogc
     Ternary owns(const void[] b) const
     {
@@ -1257,52 +1106,226 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
     }
 }
 
+/**
+
+$(D BitmappedBlock) implements a simple heap consisting of one contiguous area
+of memory organized in blocks, each of size $(D theBlockSize). A block is a unit
+of allocation. A bitmap serves as bookkeeping data, more precisely one bit per
+block indicating whether that block is currently allocated or not.
+
+Passing $(D NullAllocator) as $(D ParentAllocator) (the default) means user code
+manages allocation of the memory block from the outside; in that case
+$(D BitmappedBlock) must be constructed with a $(D ubyte[]) preallocated block and
+has no responsibility regarding the lifetime of its support underlying storage.
+If another allocator type is passed, $(D BitmappedBlock) defines a destructor that
+uses the parent allocator to release the memory block. That makes the combination of $(D AllocatorList),
+$(D BitmappedBlock), and a back-end allocator such as $(D MmapAllocator)
+a simple and scalable solution for memory allocation.
+
+There are advantages to storing bookkeeping data separated from the payload
+(as opposed to e.g. using $(D AffixAllocator) to store metadata together with
+each allocation). The layout is more compact (overhead is one bit per block),
+searching for a free block during allocation enjoys better cache locality, and
+deallocation does not touch memory around the payload being deallocated (which
+is often cold).
+
+Allocation requests are handled on a first-fit basis. Although linear in
+complexity, allocation is in practice fast because of the compact bookkeeping
+representation, use of simple and fast bitwise routines, and caching of the
+first available block position. A known issue with this general approach is
+fragmentation, partially mitigated by coalescing. Since $(D BitmappedBlock) does
+not need to maintain the allocated size, freeing memory implicitly coalesces
+free blocks together. Also, tuning $(D blockSize) has a considerable impact on
+both internal and external fragmentation.
+
+If the last template parameter is set to `No.multiblock`, the allocator will only serve
+allocations which require at most `theBlockSize`. The `BitmappedBlock` has a specialized
+implementation for single-block allocations which allows for greater performance,
+at the cost of not being able to allocate more than one block at a time.
+
+The size of each block can be selected either during compilation or at run
+time. Statically-known block sizes are frequent in practice and yield slightly
+better performance. To choose a block size statically, pass it as the $(D
+blockSize) parameter as in $(D BitmappedBlock!(4096)). To choose a block
+size parameter, use $(D BitmappedBlock!(chooseAtRuntime)) and pass the
+block size to the constructor.
+
+*/
 struct BitmappedBlock(size_t theBlockSize, uint theAlignment = platformAlignment,
    ParentAllocator = NullAllocator, Flag!"multiblock" f = Yes.multiblock)
 {
-    version(StdUnittest)
-    @system unittest
+    version(StdDdoc)
     {
-        import std.algorithm.comparison : max;
-        import std.experimental.allocator.mallocator : AlignedMallocator;
-        auto m = cast(ubyte[])(AlignedMallocator.instance.alignedAllocate(1024 * 64,
-                                max(theAlignment, cast(uint) size_t.sizeof)));
-        scope(exit) () nothrow @nogc { AlignedMallocator.instance.deallocate(m); }();
-        static if (theBlockSize == chooseAtRuntime)
-        {
-            testAllocator!(() => BitmappedBlock(m, 64));
-        }
-        else
-        {
-            testAllocator!(() => BitmappedBlock(m));
-        }
-    }
-    mixin BitmappedBlockImpl!(false, f == Yes.multiblock);
-}
+        /**
+        Constructs a block allocator given a hunk of memory, or a desired capacity
+        in bytes.
+        $(UL
+        $(LI If `ParentAllocator` is $(REF_ALTTEXT `NullAllocator`, NullAllocator, std,experimental,allocator,building_blocks,null_allocator),
+        only the constructor taking `data` is defined and the user is responsible for freeing `data` if desired.)
+        $(LI Otherwise, both constructors are defined. The `data`-based
+        constructor assumes memory has been allocated with the parent allocator.
+        The `capacity`-based constructor uses `ParentAllocator` to allocate
+        an appropriate contiguous hunk of memory. Regardless of the constructor
+        used, the destructor releases the memory by using `ParentAllocator.deallocate`.)
+        )
+        */
+        this(ubyte[] data);
 
-shared struct SharedBitmappedBlock(size_t theBlockSize, uint theAlignment = platformAlignment,
-   ParentAllocator = NullAllocator, Flag!"multiblock" f = Yes.multiblock)
-{
-    version(StdUnittest)
-    @system unittest
+        /// Ditto
+        this(ubyte[] data, uint blockSize);
+
+        /// Ditto
+        this(size_t capacity);
+
+        /// Ditto
+        this(size_t capacity, uint blockSize);
+
+        /**
+        If `blockSize == chooseAtRuntime`, `BitmappedBlock` offers a read/write
+        property `blockSize`. It must be set before any use of the allocator.
+        Otherwise (i.e. `theBlockSize` is a legit constant), `blockSize` is
+        an alias for `theBlockSize`. Whether constant or variable, must also be
+        a multiple of `alignment`. This constraint is `assert`ed statically
+        and dynamically.
+        */
+        alias blockSize = theBlockSize;
+
+        /**
+        The _alignment offered is user-configurable statically through parameter
+        `theAlignment`, defaulted to `platformAlignment`.
+        */
+        alias alignment = theAlignment;
+
+        /**
+        The _parent allocator. Depending on whether `ParentAllocator` holds state
+        or not, this is a member variable or an alias for
+        `ParentAllocator.instance`.
+        */
+        ParentAllocator parent;
+
+        /**
+        Returns the actual bytes allocated when `n` bytes are requested, i.e.
+        `n.roundUpToMultipleOf(blockSize)`.
+        */
+        pure nothrow @safe @nogc
+        size_t goodAllocSize(size_t n);
+
+        /**
+        Returns `Ternary.yes` if `b` belongs to the `BitmappedBlock` object,
+        `Ternary.no` otherwise. Never returns `Ternary.unkown`. (This
+        method is somewhat tolerant in that accepts an interior slice.)
+        */
+        pure nothrow @trusted @nogc
+        Ternary owns(const void[] b) const;
+
+        /**
+        Expands in place a buffer previously allocated by `BitmappedBlock`.
+        If instantiated with `No.multiblock`, the expansion fails if the new length
+        exceeds `theBlockSize`.
+        */
+        pure nothrow @trusted @nogc
+        bool expand(ref void[] b, immutable size_t delta);
+
+        /**
+        Deallocates a block previously allocated with this allocator.
+        */
+        nothrow @nogc
+        bool deallocate(void[] b);
+
+        /**
+        Allocates `s` bytes of memory and returns it, or `null` if memory
+        could not be allocated.
+
+        The following information might be of help with choosing the appropriate
+        block size. Actual allocation occurs in sizes multiple of the block size.
+        Allocating one block is the fastest because only one 0 bit needs to be
+        found in the metadata. Allocating 2 through 64 blocks is the next cheapest
+        because it affects a maximum of two `ulong` in the metadata.
+        Allocations greater than 64 blocks require a multiword search through the
+        metadata.
+
+        If instantiated with `No.multiblock`, it performs a search for the first zero
+        bit in the bitmap and sets it.
+        */
+        @trusted void[] allocate(const size_t s);
+
+        /**
+        Allocates s bytes of memory and returns it, or `null` if memory could not be allocated.
+        `allocateFresh` behaves just like allocate, the only difference being that this always
+        returns unused(fresh) memory. Although there may still be available space in the `BitmappedBlock`,
+        `allocateFresh` could still return null, because all the available blocks have been previously deallocated.
+        */
+        @trusted void[] allocateFresh(const size_t s);
+
+        /**
+        If the `BitmappedBlock` object is empty (has no active allocation), allocates
+        all memory within and returns a slice to it. Otherwise, returns `null`
+        (i.e. no attempt is made to allocate the largest available block).
+        */
+        void[] allocateAll();
+
+        /**
+        Returns `Ternary.yes` if no memory is currently allocated with this
+        allocator, otherwise `Ternary.no`. This method never returns
+        `Ternary.unknown`.
+        */
+        pure nothrow @safe @nogc
+        Ternary empty();
+
+        /**
+        Forcibly deallocates all memory allocated by this allocator, making it
+        available for further allocations. Does not return memory to $(D
+        ParentAllocator).
+        */
+        pure nothrow @nogc
+        bool deallocateAll();
+
+        /**
+        Reallocates a block previously allocated with `alignedAllocate`. Contractions do not occur in place.
+        */
+        @system bool alignedReallocate(ref void[] b, size_t newSize, uint a);
+
+        /**
+        Reallocates a previously-allocated block. Contractions occur in place.
+        */
+        @system bool reallocate(ref void[] b, size_t newSize);
+
+        /**
+        Allocates a block with specified alignment `a`. The alignment must be a
+        power of 2. If `a <= alignment`, function forwards to `allocate`.
+        Otherwise, it attempts to overallocate and then adjust the result for
+        proper alignment. In the worst case the slack memory is around two blocks.
+        */
+        void[] alignedAllocate(size_t n, uint a);
+
+        /**
+        If `ParentAllocator` is not `NullAllocator` and defines `deallocate`,
+        the destructor is defined to deallocate the block held.
+        */
+        ~this();
+    }
+    else
     {
-        import std.algorithm.comparison : max;
-        import std.experimental.allocator.mallocator : AlignedMallocator;
-        auto m = cast(ubyte[])(AlignedMallocator.instance.alignedAllocate(1024 * 64,
-                                max(theAlignment, cast(uint) size_t.sizeof)));
-        scope(exit) () nothrow @nogc { AlignedMallocator.instance.deallocate(m); }();
-        static if (theBlockSize == chooseAtRuntime)
+        version(StdUnittest)
+        @system unittest
         {
-            testAllocator!(() => SharedBitmappedBlock!(theBlockSize, theAlignment, NullAllocator)(m, 64));
+            import std.algorithm.comparison : max;
+            import std.experimental.allocator.mallocator : AlignedMallocator;
+            auto m = cast(ubyte[])(AlignedMallocator.instance.alignedAllocate(1024 * 64,
+                                    max(theAlignment, cast(uint) size_t.sizeof)));
+            scope(exit) () nothrow @nogc { AlignedMallocator.instance.deallocate(m); }();
+            static if (theBlockSize == chooseAtRuntime)
+            {
+                testAllocator!(() => BitmappedBlock(m, 64));
+            }
+            else
+            {
+                testAllocator!(() => BitmappedBlock(m));
+            }
         }
-        else
-        {
-            testAllocator!(() => SharedBitmappedBlock!(theBlockSize, theAlignment, NullAllocator)(m));
-        }
+        mixin BitmappedBlockImpl!(false, f == Yes.multiblock);
     }
-    mixin BitmappedBlockImpl!(true, f == Yes.multiblock);
 }
-
 
 ///
 @system unittest
@@ -1317,30 +1340,264 @@ shared struct SharedBitmappedBlock(size_t theBlockSize, uint theAlignment = plat
     assert(b.length == 100);
 }
 
+///
 @system unittest
 {
     import std.experimental.allocator.mallocator : Mallocator;
 
-    static void testAlloc(Allocator)(ref Allocator a)
+    enum blockSize = 64;
+    enum numBlocks = 10;
+
+    // The 'BitmappedBlock' is implicitly instantiated with Yes.multiblock
+    auto a = BitmappedBlock!(blockSize, 8, Mallocator, Yes.multiblock)(numBlocks * blockSize);
+
+    // Instantiated with Yes.multiblock, can allocate more than one block at a time
+    void[] buf = a.allocate(2 * blockSize);
+    assert(buf.length == 2 * blockSize);
+    assert(a.deallocate(buf));
+
+    // Can also allocate less than one block
+    buf = a.allocate(blockSize / 2);
+    assert(buf.length == blockSize / 2);
+
+    // Expands inside the same block
+    assert(a.expand(buf, blockSize / 2));
+    assert(buf.length == blockSize);
+
+    // If Yes.multiblock, can expand past the size of a single block
+    assert(a.expand(buf, 3 * blockSize));
+    assert(buf.length == 4 * blockSize);
+    assert(a.deallocate(buf));
+}
+
+///
+@system unittest
+{
+    import std.experimental.allocator.mallocator : Mallocator;
+
+    enum blockSize = 64;
+    auto a = BitmappedBlock!(blockSize, 8, Mallocator, No.multiblock)(1024 * blockSize);
+
+    // Since instantiated with No.multiblock, can only allocate at most the block size
+    void[] buf = a.allocate(blockSize + 1);
+    assert(buf is null);
+
+    buf = a.allocate(blockSize);
+    assert(buf.length == blockSize);
+    assert(a.deallocate(buf));
+
+    // This is also fine, because it's less than the block size
+    buf = a.allocate(blockSize / 2);
+    assert(buf.length == blockSize / 2);
+
+    // Can expand the buffer until its length is at most 64
+    assert(a.expand(buf, blockSize / 2));
+    assert(buf.length == blockSize);
+
+    // Cannot expand anymore
+    assert(!a.expand(buf, 1));
+    assert(a.deallocate(buf));
+}
+
+/**
+The threadsafe version of the `BitmappedBlock`.
+*/
+shared struct SharedBitmappedBlock(size_t theBlockSize, uint theAlignment = platformAlignment,
+   ParentAllocator = NullAllocator, Flag!"multiblock" f = Yes.multiblock)
+{
+    version(StdDdoc)
+    {
+        /**
+        Constructs a block allocator given a hunk of memory, or a desired capacity
+        in bytes.
+        $(UL
+        $(LI If `ParentAllocator` is $(REF_ALTTEXT `NullAllocator`, NullAllocator, std,experimental,allocator,building_blocks,null_allocator),
+        only the constructor taking `data` is defined and the user is responsible for freeing `data` if desired.)
+        $(LI Otherwise, both constructors are defined. The `data`-based
+        constructor assumes memory has been allocated with the parent allocator.
+        The `capacity`-based constructor uses `ParentAllocator` to allocate
+        an appropriate contiguous hunk of memory. Regardless of the constructor
+        used, the destructor releases the memory by using `ParentAllocator.deallocate`.)
+        )
+        */
+        this(ubyte[] data);
+
+        /// Ditto
+        this(ubyte[] data, uint blockSize);
+
+        /// Ditto
+        this(size_t capacity);
+
+        /// Ditto
+        this(size_t capacity, uint blockSize);
+
+        /**
+        If `blockSize == chooseAtRuntime`, `BitmappedBlock` offers a read/write
+        property `blockSize`. It must be set before any use of the allocator.
+        Otherwise (i.e. `theBlockSize` is a legit constant), `blockSize` is
+        an alias for `theBlockSize`. Whether constant or variable, must also be
+        a multiple of `alignment`. This constraint is `assert`ed statically
+        and dynamically.
+        */
+        alias blockSize = theBlockSize;
+
+        /**
+        The _alignment offered is user-configurable statically through parameter
+        `theAlignment`, defaulted to `platformAlignment`.
+        */
+        alias alignment = theAlignment;
+
+        /**
+        The _parent allocator. Depending on whether `ParentAllocator` holds state
+        or not, this is a member variable or an alias for
+        `ParentAllocator.instance`.
+        */
+        ParentAllocator parent;
+
+        /**
+        Returns the actual bytes allocated when `n` bytes are requested, i.e.
+        `n.roundUpToMultipleOf(blockSize)`.
+        */
+        pure nothrow @safe @nogc
+        size_t goodAllocSize(size_t n);
+
+        /**
+        Returns `Ternary.yes` if `b` belongs to the `SharedBitmappedBlock` object,
+        `Ternary.no` otherwise. Never returns `Ternary.unkown`. (This
+        method is somewhat tolerant in that accepts an interior slice.)
+        */
+        pure nothrow @trusted @nogc
+        Ternary owns(const void[] b) const;
+
+        /**
+        Expands in place a buffer previously allocated by `SharedBitmappedBlock`.
+        Expansion fails if the new length exceeds the block size.
+        */
+        bool expand(ref void[] b, immutable size_t delta);
+
+        /**
+        Deallocates the given buffer `b`, by atomically setting the corresponding
+        bit to `0`. `b` must be valid, and cannot contain multiple adjacent `blocks`.
+        */
+        nothrow @nogc
+        bool deallocate(void[] b);
+
+        /**
+        Allocates `s` bytes of memory and returns it, or `null` if memory
+        could not be allocated.
+
+        The `SharedBitmappedBlock` cannot allocate more than the given block size.
+        Allocations are satisfied by searching the first unset bit in the bitmap,
+        and atomically setting it.
+        In rare memory pressure scenarios, the allocation could fail.
+        */
+        @trusted void[] allocate(const size_t s);
+
+        /**
+        Allocates s bytes of memory and returns it, or `null` if memory could not be allocated.
+        `allocateFresh` behaves just like allocate, the only difference being that this always
+        returns unused(fresh) memory. Although there may still be available space in the `SharedBitmappedBlock`,
+        `allocateFresh` could still return null, because all the available blocks have been previously deallocated.
+        */
+        @trusted void[] allocateFresh(const size_t s);
+
+        /**
+        If the `BitmappedBlock` object is empty (has no active allocation), allocates
+        all memory within and returns a slice to it. Otherwise, returns `null`
+        (i.e. no attempt is made to allocate the largest available block).
+        */
+        void[] allocateAll();
+
+        /**
+        Returns `Ternary.yes` if no memory is currently allocated with this
+        allocator, otherwise `Ternary.no`. This method never returns
+        `Ternary.unknown`.
+        */
+        nothrow @safe @nogc
+        Ternary empty();
+
+        /**
+        Forcibly deallocates all memory allocated by this allocator, making it
+        available for further allocations. Does not return memory to `ParentAllocator`.
+        */
+        nothrow @nogc
+        bool deallocateAll();
+
+        /**
+        Reallocates a block previously allocated with $(D alignedAllocate). Contractions do not occur in place.
+        */
+        @system bool alignedReallocate(ref void[] b, size_t newSize, uint a);
+
+        /**
+        Reallocates a previously-allocated block. Contractions occur in place.
+        */
+        @system bool reallocate(ref void[] b, size_t newSize);
+
+        /**
+        Allocates a block with specified alignment `a`. The alignment must be a
+        power of 2. If `a <= alignment`, function forwards to `allocate`.
+        Otherwise, it attempts to overallocate and then adjust the result for
+        proper alignment. In the worst case the slack memory is around two blocks.
+        */
+        void[] alignedAllocate(size_t n, uint a);
+
+        /**
+        If `ParentAllocator` is not `NullAllocator` and defines `deallocate`,
+        the destructor is defined to deallocate the block held.
+        */
+        ~this();
+    }
+    else
+    {
+        version(StdUnittest)
+        @system unittest
+        {
+            import std.algorithm.comparison : max;
+            import std.experimental.allocator.mallocator : AlignedMallocator;
+            auto m = cast(ubyte[])(AlignedMallocator.instance.alignedAllocate(1024 * 64,
+                                    max(theAlignment, cast(uint) size_t.sizeof)));
+            scope(exit) () nothrow @nogc { AlignedMallocator.instance.deallocate(m); }();
+            static if (theBlockSize == chooseAtRuntime)
+            {
+                testAllocator!(() => SharedBitmappedBlock!(theBlockSize, theAlignment, NullAllocator)(m, 64));
+            }
+            else
+            {
+                testAllocator!(() => SharedBitmappedBlock!(theBlockSize, theAlignment, NullAllocator)(m));
+            }
+        }
+        mixin BitmappedBlockImpl!(true, f == Yes.multiblock);
+    }
+}
+
+///
+@system unittest
+{
+    import std.experimental.allocator.mallocator : Mallocator;
+
+    // Create 'numThreads' threads, each allocating in parallel a chunk of memory
+    static void testAlloc(Allocator)(ref Allocator a, size_t allocSize)
     {
         import core.thread : ThreadGroup;
         import std.algorithm.sorting : sort;
         import core.internal.spinlock : SpinLock;
 
         SpinLock lock = SpinLock(SpinLock.Contention.brief);
-        enum numThreads = 100;
+        enum numThreads = 10;
         void[][numThreads] buf;
         size_t count = 0;
 
+        // Each threads allocates 'allocSize'
         void fun()
         {
-            void[] b = a.allocate(63);
-            assert(b.length == 63);
+            void[] b = a.allocate(allocSize);
+            assert(b.length == allocSize);
 
             lock.lock();
+            scope(exit) lock.unlock();
+
             buf[count] = b;
             count++;
-            lock.unlock();
         }
 
         auto tg = new ThreadGroup;
@@ -1350,22 +1607,26 @@ shared struct SharedBitmappedBlock(size_t theBlockSize, uint theAlignment = plat
         }
         tg.joinAll();
 
+        // Sorting the allocations made by each thread, we expect the buffers to be
+        // adjacent inside the SharedBitmappedBlock
         sort!((a, b) => a.ptr < b.ptr)(buf[0 .. numThreads]);
         foreach (i; 0 .. numThreads - 1)
         {
             assert(buf[i].ptr + a.goodAllocSize(buf[i].length) <= buf[i + 1].ptr);
         }
 
+        // Deallocate everything
         foreach (i; 0 .. numThreads)
         {
             assert(a.deallocate(buf[i]));
         }
     }
 
-    auto alloc1 = SharedBitmappedBlock!(64, platformAlignment, Mallocator, Yes.multiblock)(1024 * 1024);
-    auto alloc2 = SharedBitmappedBlock!(64, platformAlignment, Mallocator, No.multiblock)(1024 * 1024);
-    testAlloc(alloc1);
-    testAlloc(alloc2);
+    enum blockSize = 64;
+    auto alloc1 = SharedBitmappedBlock!(blockSize, platformAlignment, Mallocator, Yes.multiblock)(1024 * 1024);
+    auto alloc2 = SharedBitmappedBlock!(blockSize, platformAlignment, Mallocator, No.multiblock)(1024 * 1024);
+    testAlloc(alloc1, 2 * blockSize);
+    testAlloc(alloc2, blockSize);
 }
 
 @system unittest
@@ -1384,13 +1645,20 @@ shared struct SharedBitmappedBlock(size_t theBlockSize, uint theAlignment = plat
 
 @system unittest
 {
-    import std.typecons : Ternary;
+    static void testAlloc(Allocator)(ref Allocator a)
+    {
+        import std.typecons : Ternary;
 
-    auto a = BitmappedBlock!(64, 64)(new ubyte[10_240]);
-    assert((() nothrow @safe @nogc => a.empty)() == Ternary.yes);
-    const b = a.allocate(100);
-    assert(b.length == 100);
-    assert((() nothrow @safe @nogc => a.empty)() == Ternary.no);
+        assert((() nothrow @safe @nogc => a.empty)() == Ternary.yes);
+        const b = a.allocate(100);
+        assert(b.length == 100);
+        assert((() nothrow @safe @nogc => a.empty)() == Ternary.no);
+    }
+    auto a1 = BitmappedBlock!(64, 64, NullAllocator, Yes.multiblock)(new ubyte[10_240]);
+    auto a2 = SharedBitmappedBlock!(64, 64, NullAllocator, Yes.multiblock)(new ubyte[10_240]);
+
+    testAlloc(a1);
+    testAlloc(a2);
 }
 
 @system unittest
@@ -1426,15 +1694,24 @@ shared struct SharedBitmappedBlock(size_t theBlockSize, uint theAlignment = plat
 
 @system unittest
 {
-    static void testAllocateAll(size_t bs)(size_t blocks, uint blocksAtATime)
+    static void testAllocateAll(size_t bs, bool isShared = true)(size_t blocks, uint blocksAtATime)
     {
-        import std.algorithm.comparison : min;
         assert(bs);
+        import std.typecons : Ternary;
+        import std.algorithm.comparison : min;
         import std.experimental.allocator.gc_allocator : GCAllocator;
-        auto a = BitmappedBlock!(bs, min(bs, platformAlignment))(
-            cast(ubyte[])(GCAllocator.instance.allocate((blocks * bs * 8 +
-                        blocks) / 8))
-        );
+
+        static if (isShared)
+        {
+            auto a = SharedBitmappedBlock!(bs, min(bs, platformAlignment), NullAllocator)(
+                cast(ubyte[])(GCAllocator.instance.allocate((blocks * bs * 8 + blocks) / 8)));
+        }
+        else
+        {
+            auto a = BitmappedBlock!(bs, min(bs, platformAlignment), NullAllocator)(
+                cast(ubyte[])(GCAllocator.instance.allocate((blocks * bs * 8 + blocks) / 8)));
+        }
+
         import std.conv : text;
         assert(blocks >= a._blocks, text(blocks, " < ", a._blocks));
         blocks = a._blocks;
@@ -1444,10 +1721,13 @@ shared struct SharedBitmappedBlock(size_t theBlockSize, uint theAlignment = plat
         assert(x is null);
         // test allocation of 1 byte
         x = a.allocate(1);
-        assert(x.length == 1 || blocks == 0,
-            text(x.ptr, " ", x.length, " ", a));
+        static if (!isShared)
+        {
+            assert(x.length == 1 || blocks == 0,
+                text(x.ptr, " ", x.length, " ", a));
+        }
         assert((() nothrow @nogc => a.deallocateAll())());
-
+        assert(a.empty() == Ternary.yes);
         bool twice = true;
 
     begin:
@@ -1456,6 +1736,7 @@ shared struct SharedBitmappedBlock(size_t theBlockSize, uint theAlignment = plat
             auto b = a.allocate(bs * blocksAtATime);
             assert(b.length == bs * blocksAtATime, text(i, ": ", b.length));
         }
+
         assert(a.allocate(bs * blocksAtATime) is null);
         if (a._blocks % blocksAtATime == 0)
             assert(a.allocate(1) is null);
@@ -1509,8 +1790,16 @@ shared struct SharedBitmappedBlock(size_t theBlockSize, uint theAlignment = plat
                 auto b = a.allocate(bs * blocksAtATime);
                 assert(b.length == bs * blocksAtATime, text(i, ": ", b.length));
                 (cast(ubyte[]) b)[] = 0xff;
-                assert((() pure nothrow @safe @nogc => a.expand(b, blocksAtATime * bs))()
-                        , text(i));
+                static if (isShared)
+                {
+                    assert((() nothrow @safe @nogc => a.expand(b, blocksAtATime * bs))()
+                            , text(i));
+                }
+                else
+                {
+                    assert((() pure nothrow @safe @nogc => a.expand(b, blocksAtATime * bs))()
+                            , text(i));
+                }
                 (cast(ubyte[]) b)[] = 0xfe;
                 assert(b.length == bs * blocksAtATime * 2, text(i, ": ", b.length));
                 a.reallocate(b, blocksAtATime * bs) || assert(0);
@@ -1520,25 +1809,46 @@ shared struct SharedBitmappedBlock(size_t theBlockSize, uint theAlignment = plat
     }
 
     testAllocateAll!(1)(0, 1);
+    testAllocateAll!(1, false)(0, 1);
     testAllocateAll!(1)(8, 1);
+    testAllocateAll!(1, false)(8, 1);
+
     testAllocateAll!(4096)(128, 1);
+    testAllocateAll!(4096, false)(128, 1);
 
     testAllocateAll!(1)(0, 2);
     testAllocateAll!(1)(128, 2);
     testAllocateAll!(4096)(128, 2);
 
+    testAllocateAll!(1, false)(0, 2);
+    testAllocateAll!(1, false)(128, 2);
+    testAllocateAll!(4096, false)(128, 2);
+
     testAllocateAll!(1)(0, 4);
     testAllocateAll!(1)(128, 4);
     testAllocateAll!(4096)(128, 4);
+
+    testAllocateAll!(1, false)(0, 4);
+    testAllocateAll!(1, false)(128, 4);
+    testAllocateAll!(4096, false)(128, 4);
 
     testAllocateAll!(1)(0, 3);
     testAllocateAll!(1)(24, 3);
     testAllocateAll!(3008)(100, 1);
     testAllocateAll!(3008)(100, 3);
 
+    testAllocateAll!(1, false)(0, 3);
+    testAllocateAll!(1, false)(24, 3);
+    testAllocateAll!(3008, false)(100, 1);
+    testAllocateAll!(3008, false)(100, 3);
+
     testAllocateAll!(1)(0, 128);
     testAllocateAll!(1)(128 * 1, 128);
     testAllocateAll!(128 * 20)(13 * 128, 128);
+
+    testAllocateAll!(1, false)(0, 128);
+    testAllocateAll!(1, false)(128 * 1, 128);
+    testAllocateAll!(128 * 20, false)(13 * 128, 128);
 }
 
 @system unittest
@@ -1626,63 +1936,69 @@ shared struct SharedBitmappedBlock(size_t theBlockSize, uint theAlignment = plat
     import std.experimental.allocator.mallocator : Mallocator;
     import std.random;
 
-    auto numBlocks = [1, 64, 256];
-    enum blocks = 10000;
-    int iter = 0;
-
-    ubyte[] payload = cast(ubyte[]) Mallocator.instance.allocate(blocks * 16);
-    auto a = BitmappedBlock!(16, 16)(payload);
-    void[][] buf = cast(void[][]) Mallocator.instance.allocate((void[]).sizeof * blocks);
-
-    auto rnd = Random();
-    while (iter < blocks)
+    static void testAlloc(Allocator)()
     {
-        int event = uniform(0, 2, rnd);
-        int doExpand = uniform(0, 2, rnd);
-        int allocSize = numBlocks[uniform(0, 3, rnd)] * 16;
-        int expandSize = numBlocks[uniform(0, 3, rnd)] * 16;
-        int doDeallocate = uniform(0, 2, rnd);
+        auto numBlocks = [1, 64, 256];
+        enum blocks = 10000;
+        int iter = 0;
 
-        if (event) buf[iter] = a.allocate(allocSize);
-        else buf[iter] = a.allocateFresh(allocSize);
+        ubyte[] payload = cast(ubyte[]) Mallocator.instance.allocate(blocks * 16);
+        auto a = Allocator(payload);
+        void[][] buf = cast(void[][]) Mallocator.instance.allocate((void[]).sizeof * blocks);
 
-        if (!buf[iter])
-            break;
-        assert(buf[iter].length == allocSize);
-
-        auto oldSize = buf[iter].length;
-        if (doExpand && a.expand(buf[iter], expandSize))
-            assert(buf[iter].length == expandSize + oldSize);
-
-        if (doDeallocate)
+        auto rnd = Random();
+        while (iter < blocks)
         {
-            assert(a.deallocate(buf[iter]));
-            buf[iter] = null;
+            int event = uniform(0, 2, rnd);
+            int doExpand = uniform(0, 2, rnd);
+            int allocSize = numBlocks[uniform(0, 3, rnd)] * 16;
+            int expandSize = numBlocks[uniform(0, 3, rnd)] * 16;
+            int doDeallocate = uniform(0, 2, rnd);
+
+            if (event) buf[iter] = a.allocate(allocSize);
+            else buf[iter] = a.allocateFresh(allocSize);
+
+            if (!buf[iter])
+                break;
+            assert(buf[iter].length == allocSize);
+
+            auto oldSize = buf[iter].length;
+            if (doExpand && a.expand(buf[iter], expandSize))
+                assert(buf[iter].length == expandSize + oldSize);
+
+            if (doDeallocate)
+            {
+                assert(a.deallocate(buf[iter]));
+                buf[iter] = null;
+            }
+
+            iter++;
         }
 
-        iter++;
+        while (iter < blocks)
+        {
+            buf[iter++] = a.allocate(16);
+            if (!buf[iter - 1])
+                break;
+            assert(buf[iter - 1].length == 16);
+        }
+
+        for (size_t i = 0; i < a._blocks; i++)
+            assert((cast(BitVector) a._control)[i]);
+
+        assert(!a.allocate(16));
+        for (size_t i = 0; i < iter; i++)
+        {
+            if (buf[i])
+                assert(a.deallocate(buf[i]));
+        }
+
+        for (size_t i = 0; i < a._blocks; i++)
+            assert(!(cast(BitVector) a._control)[i]);
     }
 
-    while (iter < blocks)
-    {
-        buf[iter++] = a.allocate(16);
-        if (!buf[iter - 1])
-            break;
-        assert(buf[iter - 1].length == 16);
-    }
-
-    for (size_t i = 0; i < a._blocks; i++)
-        assert(a._control[i]);
-
-    assert(!a.allocate(16));
-    for (size_t i = 0; i < iter; i++)
-    {
-        if (buf[i])
-            assert(a.deallocate(buf[i]));
-    }
-
-    for (size_t i = 0; i < a._blocks; i++)
-        assert(!a._control[i]);
+    testAlloc!(BitmappedBlock!(16, 16))();
+    testAlloc!(SharedBitmappedBlock!(16, 16))();
 }
 
 // Test totalAllocation and goodAllocSize
@@ -1973,7 +2289,7 @@ struct BitmappedBlockWithInternalPointers(
     assert((() nothrow @safe @nogc => h.resolveInternalPointer(offset, p))() == Ternary.no);
     assert(p is unchanged);
 
-    assert((() nothrow @safe => h.expand(b, 1))());
+    assert((() @safe => h.expand(b, 1))());
     assert(b.length == 4097);
     offset = &b[0] + 4096;
     assert((() nothrow @safe @nogc => h.resolveInternalPointer(offset, p))() == Ternary.yes);

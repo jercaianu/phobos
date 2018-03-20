@@ -12,7 +12,7 @@ private mixin template AlignedBlockListImpl(bool isShared)
     import std.traits : hasMember;
     import std.typecons : Ternary;
     static if (isShared)
-    import core.internal.spinlock : SpinLock;
+        import core.internal.spinlock : SpinLock;
 
 private:
     struct AlignedBlockNode
@@ -129,7 +129,8 @@ public:
             return true;
 
         enum ulong mask = ~(alignment - 1);
-        // Round buffer to nearest `alignment` multiple
+        // Round buffer to nearest `alignment` multiple to quickly find
+        // the 'parent' 'AlignedBlockNode'
         ulong ptr = ((cast(ulong) b.ptr) & mask);
         AlignedBlockNode *node = cast(AlignedBlockNode*) ptr;
         if (node.bAlloc.deallocate(b))
@@ -157,17 +158,20 @@ public:
             return null;
 
         static if (isShared)
-        lock.lock();
+        {
+            lock.lock();
+            scope(exit) lock.unlock();
+        }
 
         auto tmp = cast(AlignedBlockNode*) root;
 
         // Iterate through list and find first node which has fresh memory available
-        int loopCount = 0;
         while (tmp)
         {
             auto next = tmp.next;
             static if (isShared)
             {
+                // Make sure nobody deletes this node while using it
                 tmp.keepAlive++;
                 lock.unlock();
             }
@@ -188,13 +192,12 @@ public:
                 moveToFront(tmp);
 
                 static if (isShared)
-                {
-                    tmp.keepAlive--;
-                    lock.unlock();
-                }
+                tmp.keepAlive--;
+
                 return result;
             }
 
+            // This node can now be removed if necessary
             static if (isShared)
             {
                 lock.lock();
@@ -207,38 +210,35 @@ public:
                 if (atomicLoad(numNodes) > maxNodes &&
                     atomicLoad(tmp.bytesUsed) == 0 &&
                     tmp.keepAlive == 0)
-                {
                     removeNode(tmp);
-                    if (!root)
-                        break;
-                }
             }
             else
             {
                 if (numNodes > maxNodes && tmp.bytesUsed == 0)
-                {
                     removeNode(tmp);
-                    if (!root)
-                        break;
-                }
             }
 
             tmp = next;
         }
 
+        // Cannot create new AlignedBlockNode. Most likely the ParentAllocator ran out of resources
         if (!insertNewNode())
-        {
-            static if (isShared)
-            lock.unlock();
-
             return null;
-        }
 
-        void[] result = (cast(AlignedBlockNode*) root).bAlloc.allocate(n);
+        tmp = cast(typeof(tmp)) root;
         static if (isShared)
         {
-            atomicOp!"+="(root.bytesUsed, result.length);
+            tmp.keepAlive++;
             lock.unlock();
+        }
+
+        void[] result = tmp.bAlloc.allocate(n);
+
+        static if (isShared)
+        {
+            lock.lock();
+            tmp.keepAlive--;
+            atomicOp!"+="(root.bytesUsed, result.length);
         }
         else
         {
@@ -269,7 +269,7 @@ as template parameter `theAlignment`.
 The ideal use case for this allocator is in conjunction with `AscendingPageAllocator`, which
 always returns fresh memory on aligned allocations and `Segregator` for multiplexing across a wide
 range of block sizes.
-*/
+ */
 struct AlignedBlockList(Allocator, ParentAllocator, ulong theAlignment = (1 << 21))
 {
     version (StdDdoc)
@@ -278,27 +278,27 @@ struct AlignedBlockList(Allocator, ParentAllocator, ulong theAlignment = (1 << 2
         import std.traits : hasMember;
 
         /**
-        Returns a chunk of memory of size `n`
-        It finds the first node in the `AlignedBlockNode` list which has available memory,
-        and moves it to the front of the list.
+          Returns a chunk of memory of size `n`
+          It finds the first node in the `AlignedBlockNode` list which has available memory,
+          and moves it to the front of the list.
 
-        All empty nodes which cannot return new memory, are removed from the list.
-        */
+          All empty nodes which cannot return new memory, are removed from the list.
+         */
         static if (hasMember!(ParentAllocator, "alignedAllocate"))
-        void[] allocate(size_t n);
+            void[] allocate(size_t n);
 
         /**
-        Deallocates the buffer `b` given as parameter. Deallocations take place in constant
-        time, regardless of the number of nodes in the list. `b.ptr` is rounded down
-        to the nearest multiple of the `alignment` to quickly find the corresponding
-        `AlignedBlockNode`.
-        */
+          Deallocates the buffer `b` given as parameter. Deallocations take place in constant
+          time, regardless of the number of nodes in the list. `b.ptr` is rounded down
+          to the nearest multiple of the `alignment` to quickly find the corresponding
+          `AlignedBlockNode`.
+         */
         bool deallocate(void[] b);
 
         /**
-        Returns `Ternary.yes` if the buffer belongs to the parent allocator and
-        `Ternary.no` otherwise.
-        */
+          Returns `Ternary.yes` if the buffer belongs to the parent allocator and
+          `Ternary.no` otherwise.
+         */
         static if (hasMember!(ParentAllocator, "owns"))
         Ternary owns(void[] b);
     }
@@ -311,9 +311,11 @@ struct AlignedBlockList(Allocator, ParentAllocator, ulong theAlignment = (1 << 2
 }
 
 /**
-`SharedAlignedBlockList` is the threadsafe version of `AlignedBlockList`
+`SharedAlignedBlockList` is the threadsafe version of `AlignedBlockList`.
+The `Allocator` template parameter must refer a shared allocator.
+Also, the `ParentAllocate` must be a shared allocator, supporting `alignedAllocate`.
 */
-shared struct SharedAlignedBlockList(Allocator, ParentAllocator, ulong theAlignment = (1 << 23))
+shared struct SharedAlignedBlockList(Allocator, ParentAllocator, ulong theAlignment = (1 << 21))
 {
     version (StdDdoc)
     {
@@ -321,27 +323,27 @@ shared struct SharedAlignedBlockList(Allocator, ParentAllocator, ulong theAlignm
         import std.traits : hasMember;
 
         /**
-        Returns a chunk of memory of size `n`
-        It finds the first node in the `AlignedBlockNode` list which has available memory,
-        and moves it to the front of the list.
+          Returns a chunk of memory of size `n`
+          It finds the first node in the `AlignedBlockNode` list which has available memory,
+          and moves it to the front of the list.
 
-        All empty nodes which cannot return new memory, are removed from the list.
-        */
+          All empty nodes which cannot return new memory, are removed from the list.
+         */
         static if (hasMember!(ParentAllocator, "alignedAllocate"))
         void[] allocate(size_t n);
 
         /**
-        Deallocates the buffer `b` given as parameter. Deallocations take place in constant
-        time, regardless of the number of nodes in the list. `b.ptr` is rounded down
-        to the nearest multiple of the `alignment` to quickly find the corresponding
-        `AlignedBlockNode`.
-        */
+          Deallocates the buffer `b` given as parameter. Deallocations take place in constant
+          time, regardless of the number of nodes in the list. `b.ptr` is rounded down
+          to the nearest multiple of the `alignment` to quickly find the corresponding
+          `AlignedBlockNode`.
+         */
         bool deallocate(void[] b);
 
         /**
-        Returns `Ternary.yes` if the buffer belongs to the parent allocator and
-        `Ternary.no` otherwise.
-        */
+          Returns `Ternary.yes` if the buffer belongs to the parent allocator and
+          `Ternary.no` otherwise.
+         */
         static if (hasMember!(ParentAllocator, "owns"))
         Ternary owns(void[] b);
     }
@@ -374,22 +376,22 @@ version (unittest)
     import std.random;
 
     alias SuperAllocator = Segregator!(
-        256,
-        AlignedBlockList!(BitmappedBlock!256, AscendingPageAllocator*, 1 << 16),
-        Segregator!(
-            512,
-            AlignedBlockList!(BitmappedBlock!512, AscendingPageAllocator*, 1 << 16),
+            256,
+            AlignedBlockList!(BitmappedBlock!256, AscendingPageAllocator*, 1 << 16),
             Segregator!(
-                1024,
-                AlignedBlockList!(BitmappedBlock!1024, AscendingPageAllocator*, 1 << 16),
+                512,
+                AlignedBlockList!(BitmappedBlock!512, AscendingPageAllocator*, 1 << 16),
                 Segregator!(
-                    2048,
-                    AlignedBlockList!(BitmappedBlock!2048, AscendingPageAllocator*, 1 << 16),
-                    AscendingPageAllocator*
+                    1024,
+                    AlignedBlockList!(BitmappedBlock!1024, AscendingPageAllocator*, 1 << 16),
+                    Segregator!(
+                        2048,
+                        AlignedBlockList!(BitmappedBlock!2048, AscendingPageAllocator*, 1 << 16),
+                        AscendingPageAllocator*
+                        )
+                    )
                 )
-            )
-        )
-    );
+            );
 
     SuperAllocator a;
     auto pageAlloc = AscendingPageAllocator(4096 * 4096);
@@ -434,22 +436,22 @@ version (unittest)
     import core.internal.spinlock : SpinLock;
 
     alias SuperAllocator = Segregator!(
-        256,
-        SharedAlignedBlockList!(SharedBitmappedBlock!256, SharedAscendingPageAllocator*, 1 << 16),
-        Segregator!(
-            512,
-            SharedAlignedBlockList!(SharedBitmappedBlock!512, SharedAscendingPageAllocator*, 1 << 16),
+            256,
+            SharedAlignedBlockList!(SharedBitmappedBlock!256, SharedAscendingPageAllocator*, 1 << 16),
             Segregator!(
-                1024,
-                SharedAlignedBlockList!(SharedBitmappedBlock!1024, SharedAscendingPageAllocator*, 1 << 16),
+                512,
+                SharedAlignedBlockList!(SharedBitmappedBlock!512, SharedAscendingPageAllocator*, 1 << 16),
                 Segregator!(
-                    2048,
-                    SharedAlignedBlockList!(SharedBitmappedBlock!2048, SharedAscendingPageAllocator*, 1 << 16),
-                    SharedAscendingPageAllocator*
+                    1024,
+                    SharedAlignedBlockList!(SharedBitmappedBlock!1024, SharedAscendingPageAllocator*, 1 << 16),
+                    Segregator!(
+                        2048,
+                        SharedAlignedBlockList!(SharedBitmappedBlock!2048, SharedAscendingPageAllocator*, 1 << 16),
+                        SharedAscendingPageAllocator*
+                        )
+                    )
                 )
-            )
-        )
-    );
+            );
     enum numThreads = 10;
 
     SuperAllocator a;
@@ -512,9 +514,9 @@ version (unittest)
     SpinLock lock = SpinLock(SpinLock.Contention.brief);
 
     alias SuperAllocator = SharedAlignedBlockList!(
-        SharedRegion!(NullAllocator, 1),
-        SharedAscendingPageAllocator,
-        1 << 16);
+            SharedRegion!(NullAllocator, 1),
+            SharedAscendingPageAllocator,
+            1 << 16);
     void[][totalAllocs] buf;
 
     SuperAllocator a;
@@ -554,3 +556,4 @@ version (unittest)
         assert(a.deallocate(buf[totalAllocs - 1 - i]));
     }
 }
+
