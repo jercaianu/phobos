@@ -8,9 +8,39 @@ import std.experimental.allocator.common;
 // Common implementations for shared and thread local AscendingPageAllocator
 private mixin template AscendingPageAllocatorImpl(bool isShared)
 {
-    bool deallocate(void[] buf) nothrow @nogc
+    bool deallocate(void[] buf)
     {
+        import core.bitop : bsr;
+        import std.stdio;
+
         size_t goodSize = goodAllocSize(buf.length);
+
+        /*
+        static if (isShared)
+        {
+            lock.lock();
+            scope(exit) lock.unlock();
+            if ((goodSize & (goodSize - 1)) == 0 && goodSize <= (1 << 23))
+            {
+                auto bitPos = bsr(goodSize);
+                writefln("adding back to cache %d %p", bitPos, buf.ptr);
+                for (int i = 0; i < pageCache[bitPos].length; i++)
+                {
+                    if (pageCache[bitPos][i] is null)
+                    {
+                        writefln("found empty place %d %d %p", bitPos, i, buf.ptr);
+                        import core.sys.posix.sys.mman : mprotect, PROT_NONE;
+                        pageCache[bitPos][i] = cast(shared(void*)) buf.ptr;
+
+                        auto ret = mprotect(buf.ptr, goodSize, PROT_NONE);
+                        assert(ret == 0, "Fatal error");
+                        return true;
+                    }
+                }
+            }
+        }
+        */
+
         version(Posix)
         {
             import core.sys.posix.sys.mman : mmap, MAP_FAILED, MAP_PRIVATE,
@@ -490,6 +520,8 @@ private:
     size_t pageSize;
     size_t numPages;
 
+    void*[10][24] pageCache;
+
     // The start of the virtual address range
     shared void* data;
 
@@ -519,7 +551,7 @@ public:
     Returns:
     `null` on failure or if the requested size exceeds the remaining capacity.
     */
-    void[] allocate(size_t n) nothrow @nogc
+    void[] allocate(size_t n)
     {
         return allocateImpl(n, 1);
     }
@@ -538,15 +570,16 @@ public:
     Returns:
     `null` on failure or if the requested size exceeds the remaining capacity.
     */
-    void[] alignedAllocate(size_t n, uint a) nothrow @nogc
+    void[] alignedAllocate(size_t n, uint a)
     {
         // For regular `allocate` calls, `a` will be set to 1
         return allocateImpl(n, a);
     }
 
-    private void[] allocateImpl(size_t n, uint a) nothrow @nogc
+    private void[] allocateImpl(size_t n, uint a)
     {
         import std.algorithm.comparison : min;
+        import core.bitop : bsr;
 
         size_t localExtraAlloc;
         void* localOffset;
@@ -559,21 +592,51 @@ public:
         lock.lock();
         scope(exit) lock.unlock();
 
+        /*
+        import std.stdio;
+        if ((goodSize & (goodSize - 1)) == 0 && goodSize <= (1 << 23))
+        {
+            auto bitPos = bsr(goodSize);
+
+            for (int i = 0; i < pageCache[bitPos].length; i++)
+            {
+                if (pageCache[bitPos][i])
+                {
+                    import core.sys.posix.sys.mman : mremap, MREMAP_FIXED;
+                    extendMemoryProtection(cast(void*) offset, goodSize);
+                    mremap(cast(void*) pageCache[bitPos][i], goodSize, goodSize, MREMAP_FIXED, cast(void*) offset);
+                    auto result = offset;
+                    offset = cast(typeof(offset)) (result + goodSize);
+                    pageCache[bitPos][i] = null;
+                    return cast(void[]) result[0 .. n];
+                }
+            }
+        }
+        */
+
+
+        import std.stdio;
         localOffset = cast(void*) offset;
         void* alignedStart = cast(void*) roundUpToMultipleOf(cast(size_t) localOffset, a);
         assert(alignedStart.alignedAt(a));
         if (alignedStart - data > pagedBytes - goodSize)
+        {
+            writeln("fail1");
             return null;
+        }
 
         localOffset = alignedStart + goodSize;
         if (localOffset > readWriteLimit)
         {
             void* newReadWriteLimit = min(cast(void*) data + pagedBytes,
-                cast(void*) offset + extraAllocPages * pageSize);
+                cast(void*) localOffset + extraAllocPages * pageSize);
             assert(newReadWriteLimit > readWriteLimit);
             localExtraAlloc = newReadWriteLimit - readWriteLimit;
             if (!extendMemoryProtection(cast(void*) readWriteLimit, localExtraAlloc))
+            {
+                writeln("fail2");
                 return null;
+            }
             readWriteLimit = cast(shared(void*)) newReadWriteLimit;
         }
 
@@ -692,9 +755,9 @@ version(unittest)
     }
 }
 
-@system @nogc nothrow unittest
+@system unittest
 {
-    static void testAlloc(Allocator)(ref Allocator a) @nogc nothrow
+    static void testAlloc(Allocator)(ref Allocator a)
     {
         size_t pageSize = getPageSize();
 
@@ -731,7 +794,7 @@ version(unittest)
     testAlloc(aa);
 }
 
-@system @nogc nothrow unittest
+@system  unittest
 {
     size_t pageSize = getPageSize();
     size_t numPages = 26214;
@@ -748,7 +811,7 @@ version(unittest)
     assert(a.getAvailableSize() == 0);
 }
 
-@system @nogc nothrow unittest
+@system unittest
 {
     size_t pageSize = getPageSize();
     size_t numPages = 26214;
@@ -767,9 +830,9 @@ version(unittest)
     assert(a.getAvailableSize() == 0);
 }
 
-@system @nogc nothrow unittest
+@system  unittest
 {
-    static void testAlloc(Allocator)(ref Allocator a) @nogc nothrow
+    static void testAlloc(Allocator)(ref Allocator a)
     {
         import std.traits : hasMember;
 
@@ -840,7 +903,7 @@ version(unittest)
     testAlloc(aa);
 }
 
-@system @nogc nothrow unittest
+@system unittest
 {
     size_t pageSize = getPageSize();
     size_t numPages = 21000;
@@ -864,7 +927,7 @@ version(unittest)
     }
 }
 
-@system @nogc nothrow unittest
+@system  unittest
 {
     size_t pageSize = getPageSize();
     size_t numPages = 21000;
@@ -888,7 +951,7 @@ version(unittest)
     }
 }
 
-@system @nogc nothrow unittest
+@system  unittest
 {
     size_t pageSize = getPageSize();
     enum numPages = 2;
@@ -902,7 +965,7 @@ version(unittest)
     assert(!a.data && !a.offset);
 }
 
-@system @nogc nothrow unittest
+@system unittest
 {
     size_t pageSize = getPageSize();
     enum numPages = 26;
@@ -916,7 +979,7 @@ version(unittest)
     assert(!a.data && !a.offset);
 }
 
-@system @nogc nothrow unittest
+@system unittest
 {
     size_t pageSize = getPageSize();
     enum numPages = 10;

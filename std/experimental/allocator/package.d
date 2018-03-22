@@ -1078,25 +1078,15 @@ struct TypeAllocator(T)
     import std.experimental.allocator.building_blocks.ascending_page_allocator;
 
     enum blockSize = stateSize!T;
-    enum maxBlock = (1 << 15);
-
-    static if (blockSize > maxBlock)
-    {
-        static assert(0, "Not implemented for large objects");
-    }
 
     bool isInit = 0;
 
     alias LocalObjectAllocator = AlignedBlockList!(
-        BitmappedBlock!(blockSize, platformAlignment, NullAllocator, No.multiblock),
+        BitmappedBlock!(roundUpToPowerOf2(blockSize), platformAlignment, NullAllocator, No.multiblock),
         SharedAscendingPageAllocator*,
         roundUpToPowerOf2(blockSize * 1024));
 
     alias LocalArrayAllocator = Segregator!(
-        8,
-        AlignedBlockList!(BitmappedBlock!(8, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 12),
-        Segregator!(
-
         16,
         AlignedBlockList!(BitmappedBlock!(16, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 12),
         Segregator!(
@@ -1144,10 +1134,13 @@ struct TypeAllocator(T)
         1 << 15,
         AlignedBlockList!(BitmappedBlock!(1 << 15, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 21),
         SharedAscendingPageAllocator*
-        )))))))))))));
+        ))))))))))));
 
         LocalObjectAllocator loa;
         LocalArrayAllocator laa;
+
+        enum sz = LocalObjectAllocator.sizeof + LocalArrayAllocator.sizeof;
+        char[sz.roundUpToMultipleOf(64) - sz] padding;
 
     void initAlloc(SharedAscendingPageAllocator* rootAlloc)
     {
@@ -1166,7 +1159,6 @@ struct TypeAllocator(T)
         laa.allocatorForSize!64.parent = rootAlloc;
         laa.allocatorForSize!32.parent = rootAlloc;
         laa.allocatorForSize!16.parent = rootAlloc;
-        laa.allocatorForSize!8.parent = rootAlloc;
 
         loa.parent = rootAlloc;
         isInit = true;
@@ -1175,17 +1167,17 @@ struct TypeAllocator(T)
     void[] allocate(const size_t n)
     {
         if (n == stateSize!T)
+        {
+            assert(0, "not supposed to allocate single objects");
             return loa.allocate(n);
+        }
         return laa.allocate(n);
     }
 
     bool deallocate(void[] b)
     {
         if (b.length == stateSize!T)
-        {
-            import std.stdio;
             return loa.deallocate(b);
-        }
         return laa.deallocate(b);
     }
 }
@@ -1199,6 +1191,18 @@ TypeAllocator!(T) *getTLAllocator(T)()
 
 struct ThreadLocalAllocator
 {
+    enum alignment = 16;
+    void[] allocate(const size_t n)
+    {
+        return typedAllocate!char(n);
+    }
+
+    void[] deallocate(void[] b)
+    {
+        return typedDeallocate!char(b);
+    }
+
+
     void[] typedAllocate(T)(const size_t n)
     {
         auto tlalloc = getTLAllocator!T();
@@ -1661,6 +1665,8 @@ exception if the copy operation throws.
 */
 T[] makeArray(T, Allocator)(auto ref Allocator alloc, size_t length)
 {
+    //import std.conv : emplace;
+    import core.stdc.string : memcpy;
     if (!length) return null;
     static if (hasMember!(Allocator, "typedAllocate"))
     auto m = alloc.typedAllocate!T(T.sizeof * length);
@@ -1668,7 +1674,12 @@ T[] makeArray(T, Allocator)(auto ref Allocator alloc, size_t length)
     auto m = alloc.allocate(T.sizeof * length);
     if (!m.ptr) return null;
     alias U = Unqual!T;
-    return () @trusted { return cast(T[]) uninitializedFillDefault(cast(U[]) m); }();
+
+    auto t = T.init;
+    foreach(i; 0 .. length)
+        memcpy(m.ptr + i * T.sizeof, &t, T.sizeof);
+
+    return cast(T[]) m;
 }
 
 @system unittest

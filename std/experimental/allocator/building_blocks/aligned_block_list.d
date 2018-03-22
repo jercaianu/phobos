@@ -12,7 +12,7 @@ private mixin template AlignedBlockListImpl(bool isShared)
     import std.traits : hasMember;
     import std.typecons : Ternary;
     static if (isShared)
-        import core.internal.spinlock : SpinLock;
+    import core.internal.spinlock : SpinLock;
 
 private:
     struct AlignedBlockNode
@@ -78,6 +78,8 @@ private:
 
     private bool insertNewNode()
     {
+        import std.stdio;
+
         static if (isShared)
         import core.atomic : atomicOp;
 
@@ -141,7 +143,9 @@ public:
             }
             else
             {
+                import std.stdio;
                 node.bytesUsed -= b.length;
+
             }
             return true;
         }
@@ -215,7 +219,9 @@ public:
             else
             {
                 if (numNodes > maxNodes && tmp.bytesUsed == 0)
+                {
                     removeNode(tmp);
+                }
             }
 
             tmp = next;
