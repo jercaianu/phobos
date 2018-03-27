@@ -515,7 +515,7 @@ shared struct SharedAscendingPageAllocator
         */
         size_t getAvailableSize() nothrow @nogc;
     }
-
+nothrow:
 private:
     size_t pageSize;
     size_t numPages;
@@ -621,7 +621,6 @@ public:
         assert(alignedStart.alignedAt(a));
         if (alignedStart - data > pagedBytes - goodSize)
         {
-            writeln("fail1");
             return null;
         }
 
@@ -634,7 +633,6 @@ public:
             localExtraAlloc = newReadWriteLimit - readWriteLimit;
             if (!extendMemoryProtection(cast(void*) readWriteLimit, localExtraAlloc))
             {
-                writeln("fail2");
                 return null;
             }
             readWriteLimit = cast(shared(void*)) newReadWriteLimit;

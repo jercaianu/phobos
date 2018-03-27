@@ -12,6 +12,7 @@ import std.typecons : Flag, Yes, No;
 // Common implementation for shared and non-shared versions of the BitmappedBlock
 private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
 {
+nothrow:
     import std.conv : text;
     import std.traits : hasMember;
     import std.typecons : Ternary;
@@ -898,6 +899,7 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
         }
 
         // Debug helper
+        version(none)
         private void dump()
         {
             import std.stdio : writefln, writeln;

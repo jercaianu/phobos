@@ -73,7 +73,15 @@ struct AffixAllocator(Allocator, Prefix, Suffix = void)
         {
             Allocator parent()
             {
-                if (_parent.isNull) _parent = theAllocator;
+                import std.stdio;
+                if (_parent.isNull)
+                {
+                    writeln("MUMU");
+                    _parent = theAllocator;
+                }
+                assert(!_parent.isNull);
+                //writefln("pr %s th %s", &_parent._alloc, &theAllocator());
+                //assert(_parent is theAllocator);
                 assert(alignment <= _parent.alignment);
                 return _parent;
             }
@@ -352,6 +360,11 @@ struct AffixAllocator(Allocator, Prefix, Suffix = void)
         static shared AffixAllocator instance;
         shared { mixin Impl!(); }
     }
+    else static if (is(Allocator == shared))
+    {
+        static assert(stateSize!Allocator != 0);
+        shared { mixin Impl!(); }
+    }
     else
     {
         mixin Impl!();
@@ -498,4 +511,17 @@ struct AffixAllocator(Allocator, Prefix, Suffix = void)
     assert((() nothrow @nogc => a.reallocate(b, 100))());
     assert(b.length == 100);
     assert((() nothrow @nogc => a.deallocate(b))());
+}
+
+@system shared unittest
+{
+    import std.experimental.allocator : processAllocator, RCISharedAllocator;
+
+    alias SharedAllocT = shared AffixAllocator!(RCISharedAllocator, int);
+    assert(is(RCISharedAllocator == shared));
+    assert(!is(SharedAllocT.instance));
+
+    SharedAllocT a = SharedAllocT(processAllocator);
+    auto buf = a.allocate(10);
+    assert(buf.length == 10);
 }

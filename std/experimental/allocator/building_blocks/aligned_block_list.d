@@ -14,6 +14,7 @@ private mixin template AlignedBlockListImpl(bool isShared)
     static if (isShared)
     import core.internal.spinlock : SpinLock;
 
+nothrow:
 private:
     struct AlignedBlockNode
     {
