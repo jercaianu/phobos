@@ -27,7 +27,7 @@ void main(string[] args)
     {
         struct MediumStruct
         {
-            int[512] arr;
+            int[4096] arr;
         }
 
         alias T = MediumStruct;
