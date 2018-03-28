@@ -970,6 +970,8 @@ nothrow:
                 // for fast lookup
                 static immutable ubyte[255] firstZero = iota(255U).map!(x => (7 - (bsr((~x) & 0x000000ff)))).array;
 
+
+
                 foreach (size_t i; 0 .. _control.length)
                 {
                     ulong controlVal, newControlVal, bitIndex;

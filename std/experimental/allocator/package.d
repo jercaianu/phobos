@@ -1085,7 +1085,7 @@ struct TypeAllocator(T)
     alias LocalObjectAllocator = AlignedBlockList!(
         BitmappedBlock!(roundUpToPowerOf2(blockSize), platformAlignment, NullAllocator, No.multiblock),
         SharedAscendingPageAllocator*,
-        roundUpToPowerOf2(blockSize * 4096));
+        roundUpToPowerOf2(blockSize * 128));
 
     alias LocalArrayAllocator = Segregator!(
         16,
@@ -1134,8 +1134,28 @@ struct TypeAllocator(T)
 
         1 << 15,
         AlignedBlockList!(BitmappedBlock!(1 << 15, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 21),
+        Segregator!(
+
+        1 << 16,
+        AlignedBlockList!(BitmappedBlock!(1 << 15, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 21),
+        Segregator!(
+
+        1 << 17,
+        AlignedBlockList!(BitmappedBlock!(1 << 15, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 21),
+        Segregator!(
+
+        1 << 18,
+        AlignedBlockList!(BitmappedBlock!(1 << 15, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 21),
+        Segregator!(
+
+        1 << 19,
+        AlignedBlockList!(BitmappedBlock!(1 << 15, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 21),
+        Segregator!(
+
+        1 << 20,
+        AlignedBlockList!(BitmappedBlock!(1 << 15, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 21),
         SharedAscendingPageAllocator*
-        ))))))))))));
+        )))))))))))))))));
 
         LocalObjectAllocator loa;
         LocalArrayAllocator laa;
@@ -1145,7 +1165,12 @@ struct TypeAllocator(T)
 
     void initAlloc(SharedAscendingPageAllocator* rootAlloc)
     {
-        laa.allocatorForSize!(1 << 16) = rootAlloc;
+        laa.allocatorForSize!(1 << 21) = rootAlloc;
+        laa.allocatorForSize!(1 << 20).parent = rootAlloc;
+        laa.allocatorForSize!(1 << 19).parent = rootAlloc;
+        laa.allocatorForSize!(1 << 18).parent = rootAlloc;
+        laa.allocatorForSize!(1 << 17).parent = rootAlloc;
+        laa.allocatorForSize!(1 << 16).parent = rootAlloc;
         laa.allocatorForSize!(1 << 15).parent = rootAlloc;
         laa.allocatorForSize!(1 << 14).parent = rootAlloc;
         laa.allocatorForSize!(1 << 13).parent = rootAlloc;
@@ -1185,18 +1210,9 @@ TypeAllocator!(T) *getTLAllocator(T)()
 }
 
 
-struct ThreadLocalAllocator(U)
+struct ThreadLocalAllocator
 {
     enum alignment = 16;
-    void[] allocate(const size_t n) nothrow
-    {
-        return typedAllocate!U(n);
-    }
-
-    bool deallocate(void[] b) nothrow
-    {
-        return typedDeallocate!U(b);
-    }
 
     void[] typedAllocate(T)(const size_t n) nothrow
     {
@@ -1325,9 +1341,9 @@ auto make(T, Allocator, A...)(auto ref Allocator alloc, auto ref A args)
 {
     import std.algorithm.comparison : max;
     import std.conv : emplace, emplaceRef;
-    //static if (hasMember!(Allocator, "typedAllocate"))
-    //    auto m = alloc.typedAllocate!T(max(stateSize!T, 1));
-    //else
+    static if (hasMember!(Allocator, "typedAllocate"))
+        auto m = alloc.typedAllocate!T(max(stateSize!T, 1));
+    else
         auto m = alloc.allocate(max(stateSize!T, 1));
     if (!m.ptr) return null;
 
@@ -1352,16 +1368,16 @@ auto make(T, Allocator, A...)(auto ref Allocator alloc, auto ref A args)
             // 1) in case of failure, `m` is the only reference to this memory
             // 2) `m` is known to originate from `alloc`
             () @trusted {
-            //static if (hasMember!(Allocator, "typedDeallocate"))
-            //alloc.typedDeallocate!T(m);
-            //else
+            static if (hasMember!(Allocator, "typedDeallocate"))
+            alloc.typedDeallocate!T(m);
+            else
             alloc.deallocate(m); }();
         }
         else
         {
-            //static if (hasMember!(Allocator, "typedDeallocate"))
-            //alloc.typedDeallocate!T(m);
-            //else
+            static if (hasMember!(Allocator, "typedDeallocate"))
+            alloc.typedDeallocate!T(m);
+            else
             alloc.deallocate(m);
         }
     }
@@ -2451,9 +2467,9 @@ void dispose(A, T)(auto ref A alloc, auto ref T* p)
     {
         destroy(*p);
     }
-    //static if (hasMember!(A, "typedDeallocate"))
-    //alloc.typedDeallocate!T((cast(void*) p)[0 .. T.sizeof]);
-    //else
+    static if (hasMember!(A, "typedDeallocate"))
+    alloc.typedDeallocate!T((cast(void*) p)[0 .. T.sizeof]);
+    else
     alloc.deallocate((cast(void*) p)[0 .. T.sizeof]);
     static if (__traits(isRef, p))
         p = null;

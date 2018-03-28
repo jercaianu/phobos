@@ -34,7 +34,7 @@ private:
 
     AlignedBlockNode *root;
     int numNodes;
-    enum maxNodes = 10;
+    enum maxNodes = 100;
 
     static if (isShared)
     SpinLock lock = SpinLock(SpinLock.Contention.brief);
@@ -144,9 +144,7 @@ public:
             }
             else
             {
-                import std.stdio;
                 node.bytesUsed -= b.length;
-
             }
             return true;
         }
@@ -215,7 +213,9 @@ public:
                 if (atomicLoad(numNodes) > maxNodes &&
                     atomicLoad(tmp.bytesUsed) == 0 &&
                     tmp.keepAlive == 0)
+                {
                     removeNode(tmp);
+                }
             }
             else
             {
@@ -233,18 +233,10 @@ public:
             return null;
 
         tmp = cast(typeof(tmp)) root;
-        static if (isShared)
-        {
-            tmp.keepAlive++;
-            lock.unlock();
-        }
-
         void[] result = tmp.bAlloc.allocate(n);
 
         static if (isShared)
         {
-            lock.lock();
-            tmp.keepAlive--;
             atomicOp!"+="(root.bytesUsed, result.length);
         }
         else
