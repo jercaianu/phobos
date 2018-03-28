@@ -4,5 +4,5 @@ cat TIMES/malloc_16 | grep -E "real|malloc" > TIMES/malloc_16f
 cat TIMES/malloc_64 | grep -E "real|malloc" > TIMES/malloc_64f
 ./testMalloc.sh ./superalloc512 &> TIMES/malloc_512
 cat TIMES/malloc_512 | grep -E "real|malloc" > TIMES/malloc_512f
-./testMalloc.sh ./superalloc4096 &> TIMES/malloc_4096
-cat TIMES/malloc_4096 | grep -E "real|malloc" > TIMES/malloc_4096f
+#./testMalloc.sh ./superalloc4096 &> TIMES/malloc_4096
+#cat TIMES/malloc_4096 | grep -E "real|malloc" > TIMES/malloc_4096f

@@ -1,5 +1,5 @@
-elementsLarge=1000
-elementsSmall=3500
+elementsLarge=5000
+elementsSmall=0
 echo "malloc object times"
 time $1 $elementsSmall 1 0 0 1
 time $1 $elementsSmall 2 0 0 1

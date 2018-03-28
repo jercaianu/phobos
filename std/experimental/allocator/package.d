@@ -1228,7 +1228,7 @@ struct ThreadLocalAllocator
         return tlalloc.deallocate(b);
     }
 }
-__gshared SharedAscendingPageAllocator rootAllocator;
+shared SharedAscendingPageAllocator rootAllocator;
 
 
 /**
