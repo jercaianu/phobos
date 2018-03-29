@@ -1401,6 +1401,7 @@ struct BitmappedBlock(size_t theBlockSize, uint theAlignment = platformAlignment
 
 /**
 The threadsafe version of the `BitmappedBlock`.
+The semantics of the `SharedBitmappedBlock` are identical to the regular `BitmappedBlock`.
 */
 shared struct SharedBitmappedBlock(size_t theBlockSize, uint theAlignment = platformAlignment,
    ParentAllocator = NullAllocator, Flag!"multiblock" f = Yes.multiblock)
@@ -1432,7 +1433,7 @@ shared struct SharedBitmappedBlock(size_t theBlockSize, uint theAlignment = plat
         this(size_t capacity, uint blockSize);
 
         /**
-        If `blockSize == chooseAtRuntime`, `BitmappedBlock` offers a read/write
+        If `blockSize == chooseAtRuntime`, `SharedBitmappedBlock` offers a read/write
         property `blockSize`. It must be set before any use of the allocator.
         Otherwise (i.e. `theBlockSize` is a legit constant), `blockSize` is
         an alias for `theBlockSize`. Whether constant or variable, must also be
@@ -1502,7 +1503,7 @@ shared struct SharedBitmappedBlock(size_t theBlockSize, uint theAlignment = plat
         @trusted void[] allocateFresh(const size_t s);
 
         /**
-        If the `BitmappedBlock` object is empty (has no active allocation), allocates
+        If the `SharedBitmappedBlock` object is empty (has no active allocation), allocates
         all memory within and returns a slice to it. Otherwise, returns `null`
         (i.e. no attempt is made to allocate the largest available block).
         */
