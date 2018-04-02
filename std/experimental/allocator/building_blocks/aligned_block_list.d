@@ -362,8 +362,8 @@ shared struct SharedAlignedBlockList(Allocator, ParentAllocator, ulong theAlignm
     }
 }
 
-//version (unittest)
-//{
+version (unittest)
+{
     static void testrw(void[] b)
     {
         ubyte* buf = cast(ubyte*) b.ptr;
@@ -374,9 +374,8 @@ shared struct SharedAlignedBlockList(Allocator, ParentAllocator, ulong theAlignm
             assert(buf[i] == (cast(ubyte)i % 256));
         }
     }
-//}
+}
 
-/*
 @system unittest
 {
     import std.experimental.allocator.building_blocks.ascending_page_allocator : AscendingPageAllocator;
@@ -504,8 +503,8 @@ shared struct SharedAlignedBlockList(Allocator, ParentAllocator, ulong theAlignm
     }
     tg.joinAll();
 }
-*/
-void main()
+
+@system unittest
 {
     import std.experimental.allocator.building_blocks.region;
     import std.experimental.allocator.building_blocks.ascending_page_allocator;
