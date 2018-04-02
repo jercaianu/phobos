@@ -3441,28 +3441,29 @@ if (is (typeof(nullValue) == T))
     assert(ntts.to!string() == "2.5");
 }
 
+// apply
 /**
 Unpacks the content of a $(D Nullable), performs an operation and packs it again. Does nothing if isNull.
 
-When called on a $(D Nullable), $(D apply) will unpack the value contained in the $(D Nullable),
-pass it to the function you provide and wrap the result in another $(D Nullable) (if necessary).
-If the Nullable is null, $(D apply) will return null itself.
+When called on a `Nullable`, `apply` will unpack the value contained in the `Nullable`,
+pass it to the function you provide and wrap the result in another `Nullable` (if necessary).
+If the `Nullable` is null, `apply` will return null itself.
 
 Params:
-    t = a $(D Nullable)
+    t = a `Nullable`
     fun = a function operating on the content of the nullable
 
 Returns:
     `fun(t.get).nullable` if `!t.isNull`, else `Nullable.init`.
 
 See also:
-    $(HTTP en.wikipedia.org/wiki/Monad_(functional_programming)#The_Maybe_monad, The `Maybe` monad)
+    $(HTTPS en.wikipedia.org/wiki/Monad_(functional_programming)#The_Maybe_monad, The `Maybe` monad)
  */
 template apply(alias fun)
 {
     import std.functional : unaryFun;
 
-    auto apply(T)(T t)
+    auto apply(T)(auto ref T t)
     if (isInstanceOf!(Nullable, T) && is(typeof(unaryFun!fun(T.init.get))))
     {
         alias FunType = typeof(unaryFun!fun(T.init.get));
@@ -6829,6 +6830,8 @@ mixin template Proxy(alias a)
     bool* b = Name("a") in names;
 }
 
+// excludes struct S; it's 'mixin Proxy!foo' doesn't compile with -dip1000
+version(DIP1000) {} else
 @system unittest
 {
     // bug14213, using function for the payload
@@ -6837,15 +6840,19 @@ mixin template Proxy(alias a)
         int foo() { return 12; }
         mixin Proxy!foo;
     }
+    S s;
+    assert(s + 1 == 13);
+    assert(s * 2 == 24);
+}
+
+@system unittest
+{
     static class C
     {
         int foo() { return 12; }
         mixin Proxy!foo;
     }
-    S s;
-    assert(s + 1 == 13);
     C c = new C();
-    assert(s * 2 == 24);
 }
 
 // Check all floating point comparisons for both Proxy and Typedef,

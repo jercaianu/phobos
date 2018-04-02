@@ -46,7 +46,7 @@ aa[std.stdio]=-dip25 #    TODO
 aa[std.string]=-dip1000
 aa[std.system]=-dip1000
 aa[std.traits]=-dip1000
-aa[std.typecons]=-dip25 # cannot call @system function std.format.formattedWrite!(Appender!string, char, Nullable!int)
+aa[std.typecons]=-dip1000 -version=DIP1000 # merged https://github.com/dlang/phobos/pull/6338; COMPROMISE: check the reason for non-dip1000: static struct S. mixin Proxy!foo;
 aa[std.typetuple]=-dip1000
 aa[std.uni]=-dip1000 # merged https://github.com/dlang/phobos/pull/6294, https://github.com/dlang/phobos/pull/6041 (see also TODO-list there); supersedes/includes https://github.com/dlang/phobos/pull/5045; see also https://github.com/dlang/phobos/pull/6104 for improvements proposed by Seb
 aa[std.uri]=-dip1000
@@ -59,8 +59,8 @@ aa[std.zlib]=-dip1000
 
 aa[std.algorithm.comparison]=-dip1000
 aa[std.algorithm.internal]=-dip1000
-aa[std.algorithm.iteration]=-dip25 #    WIP_carblue
-aa[std.algorithm.mutation]=-dip25 # depends on std.container.slist (https://github.com/dlang/phobos/pull/6295)
+aa[std.algorithm.iteration]=-dip25 # depends on std.container.slist (to be updated https://github.com/dlang/phobos/pull/6295)
+aa[std.algorithm.mutation]=-dip25 #  depends on std.container.slist (to be updated https://github.com/dlang/phobos/pull/6295)
 aa[std.algorithm.package]=-dip1000
 aa[std.algorithm.searching]=-dip25 # depends on https://github.com/dlang/phobos/pull/6246 merged and std.algorithm.comparison fixed
 aa[std.algorithm.setops]=-dip1000
@@ -95,8 +95,8 @@ aa[std.container.binaryheap]=-dip1000
 aa[std.container.dlist]=-dip1000
 aa[std.container.package]=-dip1000
 aa[std.container.rbtree]=-dip25 # DROP
-aa[std.container.slist]=-dip25 # -dip1000 -version=DIP1000   depends on https://github.com/dlang/phobos/pull/6295 merged
-aa[std.container.util]=-dip25 #    TODO
+aa[std.container.slist]=-dip25 # -dip1000 -version=DIP1000   depends on an update (no insertFront's code duplication in constructor) and merge of https://github.com/dlang/phobos/pull/6295
+aa[std.container.util]=-dip25 # depends on rbtree and slist = -dip1000
 
 aa[std.datetime.date]=-dip1000
 aa[std.datetime.interval]=-dip1000
