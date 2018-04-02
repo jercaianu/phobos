@@ -12,6 +12,7 @@ import std.typecons : Flag, Yes, No;
 // Common implementation for shared and non-shared versions of the BitmappedBlock
 private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
 {
+nothrow:
     import std.conv : text;
     import std.traits : hasMember;
     import std.typecons : Ternary;
@@ -29,6 +30,8 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
     }
     else
     {
+        // It is the caller's responsibilty to synchronize this with
+        // allocate/deallocate in shared environments
         @property uint blockSize() { return _blockSize; }
         @property void blockSize(uint s)
         {
@@ -70,13 +73,13 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
     private void[] _payload;
     private size_t _startIdx;
 
+    // For multiblock, '_control' is a BitVector, otherwise just a regular ulong[]
     static if (multiBlock)
     {
         // Keeps track of first block which has never been used in an allocation.
         // All blocks which are located right to the '_freshBit', should have never been
         // allocated
         private ulong _freshBit;
-        // }
         private BitVector _control;
     }
     else
@@ -106,8 +109,6 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
 
     this(ubyte[] data)
     {
-        import std.stdio;
-
         immutable a = data.ptr.effectiveAlignment;
         assert(a >= size_t.alignof || !data.ptr,
             "Data must be aligned properly");
@@ -130,6 +131,7 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
                 continue;
             }
 
+            // Need the casts for shared versions
             static if (multiBlock)
             {
                 _control = cast(typeof(_control)) BitVector((cast(ulong*) data.ptr)[0 .. controlWords]);
@@ -186,9 +188,16 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
         }
         void* end = cast(void*) (_payload.ptr + _payload.length);
         parent.deallocate(start[0 .. end - start]);
-
     }
 
+    pure nothrow @safe @nogc
+    size_t goodAllocSize(size_t n)
+    {
+        return n.roundUpToMultipleOf(blockSize);
+    }
+
+    // Implementation of the 'multiBlock' BitmappedBlock
+    // For the shared version, the methods are protected by a common lock
     static if (multiBlock)
     {
         /*
@@ -239,16 +248,6 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
             // 64-bit words.
             return null;
         }
-    }
-
-    pure nothrow @safe @nogc
-    size_t goodAllocSize(size_t n)
-    {
-        return n.roundUpToMultipleOf(blockSize);
-    }
-
-    static if (multiBlock)
-    {
 
         @trusted void[] allocate(const size_t s)
         {
@@ -595,6 +594,7 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
             {
                 ulong localControl = _control.rep[wordIdx];
                 localControl |= ~mask;
+                _control.rep[wordIdx] = localControl;
             }
             else
             {
@@ -603,6 +603,7 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
             return true;
         }
 
+        // Since the lock is not pure, only the single threaded 'expand' is pure
         static if (isShared)
         {
             nothrow @trusted @nogc
@@ -846,6 +847,7 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
             return true;
         }
 
+        // Since the lock is not pure, only the single threaded version is pure
         static if (isShared)
         {
             nothrow @nogc
@@ -896,7 +898,9 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
             return Ternary((cast(BitVector) _control).allAre0());
         }
 
-        void dump()
+        // Debug helper
+        version(none)
+        private void dump()
         {
             import std.stdio : writefln, writeln;
 
@@ -954,27 +958,19 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
             @trusted void[] allocate(const size_t s)
             {
                 import core.atomic : cas, atomicLoad, atomicOp;
+                import core.bitop : bsr;
+                import std.range : iota;
+                import std.algorithm.iteration : map;
+                import std.array : array;
 
                 if (s.divideRoundUp(blockSize) != 1)
                     return null;
 
                 // First zero bit position for all values in the 0 - 255 range
                 // for fast lookup
-                static immutable ubyte[256] firstZero = [
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-                    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-                    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-                    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2,
-                    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
-                    2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
-                    4, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 6, 6, 7
-                ];
+                static immutable ubyte[255] firstZero = iota(255U).map!(x => (7 - (bsr((~x) & 0x000000ff)))).array;
+
+
 
                 foreach (size_t i; 0 .. _control.length)
                 {
@@ -1019,33 +1015,22 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
         {
             @trusted void[] allocate(const size_t s)
             {
-                import core.atomic : cas, atomicLoad, atomicOp;
+                import core.bitop : bsr;
+                import std.range : iota;
+                import std.algorithm.iteration : map;
+                import std.array : array;
 
                 if (s.divideRoundUp(blockSize) != 1)
                     return null;
 
                 // First zero bit position for all values in the 0 - 255 range
                 // for fast lookup
-                static immutable ubyte[256] firstZero = [
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-                    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-                    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-                    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2,
-                    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
-                    2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
-                    4, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 6, 6, 7
-                ];
+                static immutable ubyte[255] firstZero = iota(255U).map!(x => (7 - (bsr((~x) & 0x000000ff)))).array;
 
                 _startIdx = (_startIdx + 1) % _control.length;
-                for (size_t idx = _startIdx; idx < _startIdx + _control.length; idx++)
+                foreach (size_t idx; 0 .. _control.length)
                 {
-                    size_t i = idx % _control.length;
+                    size_t i = (idx + _startIdx) % _control.length;
                     size_t bitIndex = 0;
                     // skip all control words which have all bits set
                     if (_control[i] == ulong.max)
@@ -1086,7 +1071,6 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
             if (b is null)
                 return true;
 
-            import std.stdio;
             auto blockIndex = (b.ptr - _payload.ptr) / blockSize;
             auto controlIndex = blockIndex / 64;
             auto bitIndex = blockIndex % 64;
@@ -1360,6 +1344,65 @@ struct BitmappedBlock(size_t theBlockSize, uint theAlignment = platformAlignment
     assert(b.length == 100);
 }
 
+///
+@system unittest
+{
+    import std.experimental.allocator.mallocator : Mallocator;
+
+    enum blockSize = 64;
+    enum numBlocks = 10;
+
+    // The 'BitmappedBlock' is implicitly instantiated with Yes.multiblock
+    auto a = BitmappedBlock!(blockSize, 8, Mallocator, Yes.multiblock)(numBlocks * blockSize);
+
+    // Instantiated with Yes.multiblock, can allocate more than one block at a time
+    void[] buf = a.allocate(2 * blockSize);
+    assert(buf.length == 2 * blockSize);
+    assert(a.deallocate(buf));
+
+    // Can also allocate less than one block
+    buf = a.allocate(blockSize / 2);
+    assert(buf.length == blockSize / 2);
+
+    // Expands inside the same block
+    assert(a.expand(buf, blockSize / 2));
+    assert(buf.length == blockSize);
+
+    // If Yes.multiblock, can expand past the size of a single block
+    assert(a.expand(buf, 3 * blockSize));
+    assert(buf.length == 4 * blockSize);
+    assert(a.deallocate(buf));
+}
+
+///
+@system unittest
+{
+    import std.experimental.allocator.mallocator : Mallocator;
+
+    enum blockSize = 64;
+    auto a = BitmappedBlock!(blockSize, 8, Mallocator, No.multiblock)(1024 * blockSize);
+
+    // Since instantiated with No.multiblock, can only allocate at most the block size
+    void[] buf = a.allocate(blockSize + 1);
+    assert(buf is null);
+
+    buf = a.allocate(blockSize);
+    assert(buf.length == blockSize);
+    assert(a.deallocate(buf));
+
+    // This is also fine, because it's less than the block size
+    buf = a.allocate(blockSize / 2);
+    assert(buf.length == blockSize / 2);
+
+    // Can expand the buffer until its length is at most 64
+    assert(a.expand(buf, blockSize / 2));
+    assert(buf.length == blockSize);
+
+    // Cannot expand anymore
+    assert(!a.expand(buf, 1));
+    assert(a.deallocate(buf));
+}
+
 /**
 The threadsafe version of the `BitmappedBlock`.
 */
@@ -1534,40 +1577,31 @@ shared struct SharedBitmappedBlock(size_t theBlockSize, uint theAlignment = plat
 ///
 @system unittest
 {
-    // Create a block allocator on top of a 10KB stack region.
-    import std.experimental.allocator.building_blocks.region : InSituRegion;
-    import std.traits : hasMember;
-    InSituRegion!(10_240, 64) r;
-    auto a = SharedBitmappedBlock!(64, 64)(cast(ubyte[])(r.allocateAll()));
-    static assert(hasMember!(InSituRegion!(10_240, 64), "allocateAll"));
-    const b = a.allocate(100);
-    assert(b.length == 100);
-}
-
-@system unittest
-{
     import std.experimental.allocator.mallocator : Mallocator;
 
-    static void testAlloc(Allocator)(ref Allocator a)
+    // Create 'numThreads' threads, each allocating in parallel a chunk of memory
+    static void testAlloc(Allocator)(ref Allocator a, size_t allocSize)
     {
         import core.thread : ThreadGroup;
         import std.algorithm.sorting : sort;
         import core.internal.spinlock : SpinLock;
 
         SpinLock lock = SpinLock(SpinLock.Contention.brief);
-        enum numThreads = 100;
+        enum numThreads = 10;
         void[][numThreads] buf;
         size_t count = 0;
 
+        // Each threads allocates 'allocSize'
         void fun()
         {
-            void[] b = a.allocate(63);
-            assert(b.length == 63);
+            void[] b = a.allocate(allocSize);
+            assert(b.length == allocSize);
 
             lock.lock();
+            scope(exit) lock.unlock();
+
             buf[count] = b;
             count++;
-            lock.unlock();
         }
 
         auto tg = new ThreadGroup;
@@ -1577,22 +1611,26 @@ shared struct SharedBitmappedBlock(size_t theBlockSize, uint theAlignment = plat
         }
         tg.joinAll();
 
+        // Sorting the allocations made by each thread, we expect the buffers to be
+        // adjacent inside the SharedBitmappedBlock
         sort!((a, b) => a.ptr < b.ptr)(buf[0 .. numThreads]);
         foreach (i; 0 .. numThreads - 1)
         {
             assert(buf[i].ptr + a.goodAllocSize(buf[i].length) <= buf[i + 1].ptr);
         }
 
+        // Deallocate everything
         foreach (i; 0 .. numThreads)
         {
             assert(a.deallocate(buf[i]));
         }
     }
 
-    auto alloc1 = SharedBitmappedBlock!(64, platformAlignment, Mallocator, Yes.multiblock)(1024 * 1024);
-    auto alloc2 = SharedBitmappedBlock!(64, platformAlignment, Mallocator, No.multiblock)(1024 * 1024);
-    testAlloc(alloc1);
-    testAlloc(alloc2);
+    enum blockSize = 64;
+    auto alloc1 = SharedBitmappedBlock!(blockSize, platformAlignment, Mallocator, Yes.multiblock)(1024 * 1024);
+    auto alloc2 = SharedBitmappedBlock!(blockSize, platformAlignment, Mallocator, No.multiblock)(1024 * 1024);
+    testAlloc(alloc1, 2 * blockSize);
+    testAlloc(alloc2, blockSize);
 }
 
 @system unittest
@@ -1611,13 +1649,20 @@ shared struct SharedBitmappedBlock(size_t theBlockSize, uint theAlignment = plat
 
 @system unittest
 {
-    import std.typecons : Ternary;
+    static void testAlloc(Allocator)(ref Allocator a)
+    {
+        import std.typecons : Ternary;
 
-    auto a = BitmappedBlock!(64, 64)(new ubyte[10_240]);
-    assert((() nothrow @safe @nogc => a.empty)() == Ternary.yes);
-    const b = a.allocate(100);
-    assert(b.length == 100);
-    assert((() nothrow @safe @nogc => a.empty)() == Ternary.no);
+        assert((() nothrow @safe @nogc => a.empty)() == Ternary.yes);
+        const b = a.allocate(100);
+        assert(b.length == 100);
+        assert((() nothrow @safe @nogc => a.empty)() == Ternary.no);
+    }
+    auto a1 = BitmappedBlock!(64, 64, NullAllocator, Yes.multiblock)(new ubyte[10_240]);
+    auto a2 = SharedBitmappedBlock!(64, 64, NullAllocator, Yes.multiblock)(new ubyte[10_240]);
+
+    testAlloc(a1);
+    testAlloc(a2);
 }
 
 @system unittest
@@ -1653,15 +1698,24 @@ shared struct SharedBitmappedBlock(size_t theBlockSize, uint theAlignment = plat
 
 @system unittest
 {
-    static void testAllocateAll(size_t bs)(size_t blocks, uint blocksAtATime)
+    static void testAllocateAll(size_t bs, bool isShared = true)(size_t blocks, uint blocksAtATime)
     {
-        import std.algorithm.comparison : min;
         assert(bs);
+        import std.typecons : Ternary;
+        import std.algorithm.comparison : min;
         import std.experimental.allocator.gc_allocator : GCAllocator;
-        auto a = BitmappedBlock!(bs, min(bs, platformAlignment))(
-            cast(ubyte[])(GCAllocator.instance.allocate((blocks * bs * 8 +
-                        blocks) / 8))
-        );
+
+        static if (isShared)
+        {
+            auto a = SharedBitmappedBlock!(bs, min(bs, platformAlignment), NullAllocator)(
+                cast(ubyte[])(GCAllocator.instance.allocate((blocks * bs * 8 + blocks) / 8)));
+        }
+        else
+        {
+            auto a = BitmappedBlock!(bs, min(bs, platformAlignment), NullAllocator)(
+                cast(ubyte[])(GCAllocator.instance.allocate((blocks * bs * 8 + blocks) / 8)));
+        }
+
         import std.conv : text;
         assert(blocks >= a._blocks, text(blocks, " < ", a._blocks));
         blocks = a._blocks;
@@ -1671,10 +1725,13 @@ shared struct SharedBitmappedBlock(size_t theBlockSize, uint theAlignment = plat
         assert(x is null);
         // test allocation of 1 byte
         x = a.allocate(1);
-        assert(x.length == 1 || blocks == 0,
-            text(x.ptr, " ", x.length, " ", a));
+        static if (!isShared)
+        {
+            assert(x.length == 1 || blocks == 0,
+                text(x.ptr, " ", x.length, " ", a));
+        }
         assert((() nothrow @nogc => a.deallocateAll())());
-
+        assert(a.empty() == Ternary.yes);
         bool twice = true;
 
     begin:
@@ -1683,6 +1740,7 @@ shared struct SharedBitmappedBlock(size_t theBlockSize, uint theAlignment = plat
             auto b = a.allocate(bs * blocksAtATime);
             assert(b.length == bs * blocksAtATime, text(i, ": ", b.length));
         }
+
         assert(a.allocate(bs * blocksAtATime) is null);
         if (a._blocks % blocksAtATime == 0)
             assert(a.allocate(1) is null);
@@ -1736,8 +1794,16 @@ shared struct SharedBitmappedBlock(size_t theBlockSize, uint theAlignment = plat
                 auto b = a.allocate(bs * blocksAtATime);
                 assert(b.length == bs * blocksAtATime, text(i, ": ", b.length));
                 (cast(ubyte[]) b)[] = 0xff;
-                assert((() pure nothrow @safe @nogc => a.expand(b, blocksAtATime * bs))()
-                        , text(i));
+                static if (isShared)
+                {
+                    assert((() nothrow @safe @nogc => a.expand(b, blocksAtATime * bs))()
+                            , text(i));
+                }
+                else
+                {
+                    assert((() pure nothrow @safe @nogc => a.expand(b, blocksAtATime * bs))()
+                            , text(i));
+                }
                 (cast(ubyte[]) b)[] = 0xfe;
                 assert(b.length == bs * blocksAtATime * 2, text(i, ": ", b.length));
                 a.reallocate(b, blocksAtATime * bs) || assert(0);
@@ -1747,25 +1813,46 @@ shared struct SharedBitmappedBlock(size_t theBlockSize, uint theAlignment = plat
     }
 
     testAllocateAll!(1)(0, 1);
+    testAllocateAll!(1, false)(0, 1);
     testAllocateAll!(1)(8, 1);
+    testAllocateAll!(1, false)(8, 1);
+
     testAllocateAll!(4096)(128, 1);
+    testAllocateAll!(4096, false)(128, 1);
 
     testAllocateAll!(1)(0, 2);
     testAllocateAll!(1)(128, 2);
     testAllocateAll!(4096)(128, 2);
 
+    testAllocateAll!(1, false)(0, 2);
+    testAllocateAll!(1, false)(128, 2);
+    testAllocateAll!(4096, false)(128, 2);
+
     testAllocateAll!(1)(0, 4);
     testAllocateAll!(1)(128, 4);
     testAllocateAll!(4096)(128, 4);
+
+    testAllocateAll!(1, false)(0, 4);
+    testAllocateAll!(1, false)(128, 4);
+    testAllocateAll!(4096, false)(128, 4);
 
     testAllocateAll!(1)(0, 3);
     testAllocateAll!(1)(24, 3);
     testAllocateAll!(3008)(100, 1);
     testAllocateAll!(3008)(100, 3);
 
+    testAllocateAll!(1, false)(0, 3);
+    testAllocateAll!(1, false)(24, 3);
+    testAllocateAll!(3008, false)(100, 1);
+    testAllocateAll!(3008, false)(100, 3);
+
     testAllocateAll!(1)(0, 128);
     testAllocateAll!(1)(128 * 1, 128);
     testAllocateAll!(128 * 20)(13 * 128, 128);
+
+    testAllocateAll!(1, false)(0, 128);
+    testAllocateAll!(1, false)(128 * 1, 128);
+    testAllocateAll!(128 * 20, false)(13 * 128, 128);
 }
 
 @system unittest
@@ -1853,63 +1940,69 @@ shared struct SharedBitmappedBlock(size_t theBlockSize, uint theAlignment = plat
     import std.experimental.allocator.mallocator : Mallocator;
     import std.random;
 
-    auto numBlocks = [1, 64, 256];
-    enum blocks = 10000;
-    int iter = 0;
-
-    ubyte[] payload = cast(ubyte[]) Mallocator.instance.allocate(blocks * 16);
-    auto a = BitmappedBlock!(16, 16)(payload);
-    void[][] buf = cast(void[][]) Mallocator.instance.allocate((void[]).sizeof * blocks);
-
-    auto rnd = Random();
-    while (iter < blocks)
+    static void testAlloc(Allocator)()
     {
-        int event = uniform(0, 2, rnd);
-        int doExpand = uniform(0, 2, rnd);
-        int allocSize = numBlocks[uniform(0, 3, rnd)] * 16;
-        int expandSize = numBlocks[uniform(0, 3, rnd)] * 16;
-        int doDeallocate = uniform(0, 2, rnd);
+        auto numBlocks = [1, 64, 256];
+        enum blocks = 10000;
+        int iter = 0;
 
-        if (event) buf[iter] = a.allocate(allocSize);
-        else buf[iter] = a.allocateFresh(allocSize);
+        ubyte[] payload = cast(ubyte[]) Mallocator.instance.allocate(blocks * 16);
+        auto a = Allocator(payload);
+        void[][] buf = cast(void[][]) Mallocator.instance.allocate((void[]).sizeof * blocks);
 
-        if (!buf[iter])
-            break;
-        assert(buf[iter].length == allocSize);
-
-        auto oldSize = buf[iter].length;
-        if (doExpand && a.expand(buf[iter], expandSize))
-            assert(buf[iter].length == expandSize + oldSize);
-
-        if (doDeallocate)
+        auto rnd = Random();
+        while (iter < blocks)
         {
-            assert(a.deallocate(buf[iter]));
-            buf[iter] = null;
+            int event = uniform(0, 2, rnd);
+            int doExpand = uniform(0, 2, rnd);
+            int allocSize = numBlocks[uniform(0, 3, rnd)] * 16;
+            int expandSize = numBlocks[uniform(0, 3, rnd)] * 16;
+            int doDeallocate = uniform(0, 2, rnd);
+
+            if (event) buf[iter] = a.allocate(allocSize);
+            else buf[iter] = a.allocateFresh(allocSize);
+
+            if (!buf[iter])
+                break;
+            assert(buf[iter].length == allocSize);
+
+            auto oldSize = buf[iter].length;
+            if (doExpand && a.expand(buf[iter], expandSize))
+                assert(buf[iter].length == expandSize + oldSize);
+
+            if (doDeallocate)
+            {
+                assert(a.deallocate(buf[iter]));
+                buf[iter] = null;
+            }
+
+            iter++;
         }
 
-        iter++;
+        while (iter < blocks)
+        {
+            buf[iter++] = a.allocate(16);
+            if (!buf[iter - 1])
+                break;
+            assert(buf[iter - 1].length == 16);
+        }
+
+        for (size_t i = 0; i < a._blocks; i++)
+            assert((cast(BitVector) a._control)[i]);
+
+        assert(!a.allocate(16));
+        for (size_t i = 0; i < iter; i++)
+        {
+            if (buf[i])
+                assert(a.deallocate(buf[i]));
+        }
+
+        for (size_t i = 0; i < a._blocks; i++)
+            assert(!(cast(BitVector) a._control)[i]);
     }
 
-    while (iter < blocks)
-    {
-        buf[iter++] = a.allocate(16);
-        if (!buf[iter - 1])
-            break;
-        assert(buf[iter - 1].length == 16);
-    }
-
-    for (size_t i = 0; i < a._blocks; i++)
-        assert(a._control[i]);
-
-    assert(!a.allocate(16));
-    for (size_t i = 0; i < iter; i++)
-    {
-        if (buf[i])
-            assert(a.deallocate(buf[i]));
-    }
-
-    for (size_t i = 0; i < a._blocks; i++)
-        assert(!a._control[i]);
+    testAlloc!(BitmappedBlock!(16, 16))();
+    testAlloc!(SharedBitmappedBlock!(16, 16))();
 }
 
 // Test totalAllocation and goodAllocSize
@@ -2200,7 +2293,7 @@ struct BitmappedBlockWithInternalPointers(
     assert((() nothrow @safe @nogc => h.resolveInternalPointer(offset, p))() == Ternary.no);
     assert(p is unchanged);
 
-    assert((() nothrow @safe => h.expand(b, 1))());
+    assert((() @safe => h.expand(b, 1))());
     assert(b.length == 4097);
     offset = &b[0] + 4096;
     assert((() nothrow @safe @nogc => h.resolveInternalPointer(offset, p))() == Ternary.yes);
