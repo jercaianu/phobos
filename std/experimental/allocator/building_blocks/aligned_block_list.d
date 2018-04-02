@@ -207,7 +207,7 @@ public:
             {
                 lock.lock();
                 tmp.keepAlive--;
-                next.keepAlive--;
+                if (next) next.keepAlive--;
             }
 
             if (!next)
@@ -414,7 +414,7 @@ version (unittest)
     enum testNum = 10;
     void[][testNum] buf;
     enum pageSize = 4096;
-    int maxSize = 8192;
+    enum maxSize = 8192;
     for (int i = 0; i < maxIter; i += testNum)
     {
         foreach (j; 0 .. testNum)
@@ -473,11 +473,11 @@ version (unittest)
     {
         auto rnd = Random();
 
-        size_t maxIter = 20;
+        enum maxIter = 20;
         enum testNum = 5;
         void[][testNum] buf;
-        size_t pageSize = 4096;
-        int maxSize = 8192;
+        enum pageSize = 4096;
+        enum maxSize = 8192;
         for (int i = 0; i < maxIter; i += testNum)
         {
             foreach (j; 0 .. testNum)
