@@ -949,115 +949,111 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
             (cast(BitVector) _control)[] = 1;
             return cast(void[]) _payload;
         }
-    }
-    // Single block implementation
+    } // Finish Yes.multiblock implementation specifics
     else
     {
         static if (isShared)
+        @trusted void[] allocate(const size_t s)
         {
-            @trusted void[] allocate(const size_t s)
-            {
-                import core.atomic : cas, atomicLoad, atomicOp;
-                import core.bitop : bsr;
-                import std.range : iota;
-                import std.algorithm.iteration : map;
-                import std.array : array;
+            import core.atomic : cas, atomicLoad, atomicOp;
+            import core.bitop : bsr;
+            import std.range : iota;
+            import std.algorithm.iteration : map;
+            import std.array : array;
 
-                if (s.divideRoundUp(blockSize) != 1)
-                    return null;
-
-                // First zero bit position for all values in the 0 - 255 range
-                // for fast lookup
-                static immutable ubyte[255] firstZero = iota(255U).map!(x => (7 - (bsr((~x) & 0x000000ff)))).array;
-
-                foreach (size_t i; 0 .. _control.length)
-                {
-                    ulong controlVal, newControlVal, bitIndex;
-                    do
-                    {
-                        bitIndex = 0;
-                        newControlVal = 0;
-                        controlVal = atomicLoad(_control[i]);
-
-                        // skip all control words which have all bits set
-                        if (controlVal == ulong.max)
-                            break;
-
-                        // fast lookup of first byte which has at least one zero bit
-                        foreach (byteIndex; 0 .. 8)
-                        {
-                            ulong mask = (0xFFUL << (8 * (7 - byteIndex)));
-                            if ((mask & controlVal) != mask)
-                            {
-                                ubyte byteVal = cast(ubyte) ((mask & controlVal) >> (8 * (7 - byteIndex)));
-                                bitIndex += firstZero[byteVal];
-                                newControlVal = controlVal | (1UL << (63 - bitIndex));
-                                break;
-                            }
-                            bitIndex += 8;
-                        }
-                    } while (!cas(&_control[i], controlVal, newControlVal));
-
-                    auto blockIndex = bitIndex + 64 * i;
-                    if (controlVal != ulong.max && blockIndex < _blocks)
-                    {
-                        size_t payloadBlockStart = cast(size_t) blockIndex * blockSize;
-                        return cast(void[]) _payload[payloadBlockStart .. payloadBlockStart + s];
-                    }
-                }
-
+            if (s.divideRoundUp(blockSize) != 1)
                 return null;
-            }
-        }
-        else
-        {
-            @trusted void[] allocate(const size_t s)
+
+            // First zero bit position for all values in the 0 - 255 range
+            // for fast lookup
+            static immutable ubyte[255] firstZero = iota(255U).map!(x => (7 - (bsr((~x) & 0x000000ff)))).array;
+
+            foreach (size_t i; 0 .. _control.length)
             {
-                import core.bitop : bsr;
-                import std.range : iota;
-                import std.algorithm.iteration : map;
-                import std.array : array;
-
-                if (s.divideRoundUp(blockSize) != 1)
-                    return null;
-
-                // First zero bit position for all values in the 0 - 255 range
-                // for fast lookup
-                static immutable ubyte[255] firstZero = iota(255U).map!(x => (7 - (bsr((~x) & 0x000000ff)))).array;
-
-                _startIdx = (_startIdx + 1) % _control.length;
-                foreach (size_t idx; 0 .. _control.length)
+                ulong controlVal, newControlVal, bitIndex;
+                do
                 {
-                    size_t i = (idx + _startIdx) % _control.length;
-                    size_t bitIndex = 0;
+                    bitIndex = 0;
+                    newControlVal = 0;
+                    controlVal = atomicLoad(_control[i]);
+
                     // skip all control words which have all bits set
-                    if (_control[i] == ulong.max)
-                        continue;
+                    if (controlVal == ulong.max)
+                        break;
 
                     // fast lookup of first byte which has at least one zero bit
                     foreach (byteIndex; 0 .. 8)
                     {
                         ulong mask = (0xFFUL << (8 * (7 - byteIndex)));
-                        if ((mask & _control[i]) != mask)
+                        if ((mask & controlVal) != mask)
                         {
-                            ubyte byteVal = cast(ubyte) ((mask & _control[i]) >> (8 * (7 - byteIndex)));
+                            ubyte byteVal = cast(ubyte) ((mask & controlVal) >> (8 * (7 - byteIndex)));
                             bitIndex += firstZero[byteVal];
-                            _control[i] |= (1UL << (63 - bitIndex));
+                            newControlVal = controlVal | (1UL << (63 - bitIndex));
                             break;
                         }
                         bitIndex += 8;
                     }
+                } while (!cas(&_control[i], controlVal, newControlVal));
 
-                    auto blockIndex = bitIndex + 64 * i;
-                    if (blockIndex < _blocks)
+                auto blockIndex = bitIndex + 64 * i;
+                if (controlVal != ulong.max && blockIndex < _blocks)
+                {
+                    size_t payloadBlockStart = cast(size_t) blockIndex * blockSize;
+                    return cast(void[]) _payload[payloadBlockStart .. payloadBlockStart + s];
+                }
+            }
+
+            return null;
+        }
+
+        static if (!isShared)
+        @trusted void[] allocate(const size_t s)
+        {
+            import core.bitop : bsr;
+            import std.range : iota;
+            import std.algorithm.iteration : map;
+            import std.array : array;
+
+            if (s.divideRoundUp(blockSize) != 1)
+                return null;
+
+            // First zero bit position for all values in the 0 - 255 range
+            // for fast lookup
+            static immutable ubyte[255] firstZero = iota(255U).map!(x => (7 - (bsr((~x) & 0x000000ff)))).array;
+
+            _startIdx = (_startIdx + 1) % _control.length;
+            foreach (size_t idx; 0 .. _control.length)
+            {
+                size_t i = (idx + _startIdx) % _control.length;
+                size_t bitIndex = 0;
+                // skip all control words which have all bits set
+                if (_control[i] == ulong.max)
+                    continue;
+
+                // fast lookup of first byte which has at least one zero bit
+                foreach (byteIndex; 0 .. 8)
+                {
+                    ulong mask = (0xFFUL << (8 * (7 - byteIndex)));
+                    if ((mask & _control[i]) != mask)
                     {
-                        size_t payloadBlockStart = cast(size_t) blockIndex * blockSize;
-                        return cast(void[]) _payload[payloadBlockStart .. payloadBlockStart + s];
+                        ubyte byteVal = cast(ubyte) ((mask & _control[i]) >> (8 * (7 - byteIndex)));
+                        bitIndex += firstZero[byteVal];
+                        _control[i] |= (1UL << (63 - bitIndex));
+                        break;
                     }
+                    bitIndex += 8;
                 }
 
-                return null;
+                auto blockIndex = bitIndex + 64 * i;
+                if (blockIndex < _blocks)
+                {
+                    size_t payloadBlockStart = cast(size_t) blockIndex * blockSize;
+                    return cast(void[]) _payload[payloadBlockStart .. payloadBlockStart + s];
+                }
             }
+
+            return null;
         }
 
         nothrow @nogc
@@ -1097,7 +1093,7 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
             b = b.ptr[0 .. newLength];
             return true;
         }
-    }
+    } // Finish No.multiblock implementation specifics
 
     pure nothrow @trusted @nogc
     Ternary owns(const void[] b) const
