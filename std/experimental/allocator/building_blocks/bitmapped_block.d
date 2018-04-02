@@ -102,7 +102,6 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
         auto maxSlack = alignment <= initialAlignment
             ? 0
             : alignment - initialAlignment;
-        //writeln(maxSlack);
         return leadingUlongs * 8 + maxSlack + blockSize * blocks;
     }
 
@@ -177,6 +176,7 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
         && hasMember!(ParentAllocator, "deallocate"))
     ~this()
     {
+        // multiblock bitmapped blocks use a BitVector
         static if (multiBlock)
         {
             void* start = cast(void*) _control.rep.ptr;
@@ -211,6 +211,8 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
             {
                 static if (isShared)
                 {
+                    // Shared demands atomic increment, however this is protected
+                    // by a lock. Regular increment is fine
                     auto localStart = _startIdx + 1;
                     _startIdx = localStart;
                 }
@@ -258,6 +260,7 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
             return allocateImpl(s);
         }
 
+        // If shared, this is protected by a lock inside 'allocate'
         private @trusted void[] allocateImpl(const size_t s)
         {
             const blocks = s.divideRoundUp(blockSize);
@@ -348,6 +351,7 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
             return alignedAllocateImpl(n, a);
         }
 
+        // If shared, this is protected by a lock inside 'alignedAllocate'
         private void[] alignedAllocateImpl(size_t n, uint a)
         {
             import std.math : isPowerOf2;
@@ -461,6 +465,7 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
                 }
                 static if (isShared)
                 {
+                    // Dont want atomics, because this is protected by 'lock'
                     ulong localControl = _control.rep[wordIdx];
                     localControl |= mask;
                     _control.rep[wordIdx] = localControl;
@@ -556,14 +561,7 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
             assert(blocks > 64);
             if (_startIdx == _control._rep.length)
             {
-                static if (isShared)
-                {
-                    assert((cast(BitVector) _control).allAre1);
-                }
-                else
-                {
-                    assert(_control.allAre1);
-                }
+                assert((cast(BitVector) _control).allAre1);
                 return null;
             }
 
@@ -588,7 +586,6 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
             assert(wordIdx < _control.rep.length && blocks >= 1 && blocks <= 64);
             const mask = (1UL << (64 - blocks)) - 1;
             if (_control.rep[wordIdx] > mask) return false;
-            // yay, works
             static if (isShared)
             {
                 ulong localControl = _control.rep[wordIdx];
@@ -623,6 +620,7 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
             }
         }
 
+        // If shared, this is protected by a lock inside 'expand'
         pure nothrow @trusted @nogc
         private bool expandImpl(ref void[] b, immutable size_t delta)
         {
@@ -675,6 +673,7 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
             return reallocateImpl(b, newSize);
         }
 
+        // If shared, this is protected by a lock inside 'reallocate'
         private @system bool reallocateImpl(ref void[] b, size_t newSize)
         {
             static bool slowReallocate(Allocator)(ref Allocator a, ref void[] b, size_t s)
@@ -724,6 +723,7 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
             return alignedReallocateImpl(b, newSize, a);
         }
 
+        // If shared, this is protected by a lock inside 'alignedReallocate'
         private @system bool alignedReallocateImpl(ref void[] b, size_t newSize, uint a)
         {
             static bool slowAlignedReallocate(Allocator)(ref Allocator alloc,
@@ -763,6 +763,7 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
             return deallocateImpl(b);
         }
 
+        // If shared, this is protected by a lock inside 'deallocate'
         nothrow @nogc
         private bool deallocateImpl(void[] b)
         {
@@ -871,6 +872,7 @@ private mixin template BitmappedBlockImpl(bool isShared, bool multiBlock)
             }
         }
 
+        // Since the lock is not pure, only the single threaded version is pure
         static if (isShared)
         {
             nothrow @safe @nogc
