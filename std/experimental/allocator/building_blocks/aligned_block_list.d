@@ -12,12 +12,15 @@ private mixin template AlignedBlockListImpl(bool isShared)
 {
     import std.traits : hasMember;
     import std.typecons : Ternary;
+
     static if (isShared)
     import core.internal.spinlock : SpinLock;
 
 nothrow:
 private:
-    struct AlignedBlockNode
+    // Doubly linked list of 'AlignedBlockNode'
+    // Each node contains an `Allocator` followed by its payload
+    static struct AlignedBlockNode
     {
         AlignedBlockNode* next, prev;
         Allocator bAlloc;
@@ -25,6 +28,8 @@ private:
         static if (isShared)
         {
             shared(size_t) bytesUsed;
+            // Since the lock is not taken when allocating, this acts like a refcount
+            // keeping the node alive
             uint keepAlive;
         }
         else
@@ -33,14 +38,22 @@ private:
         }
     }
 
-    AlignedBlockNode *root;
+    // Root of the internal doubly linked list
+    AlignedBlockNode* root;
+
+    // Number of active nodes
     int numNodes;
+
+    // If the numNodes exceeds this limit, we will start deallocating nodes
     enum maxNodes = 50;
 
+    // This lock is always taken when changing the list
+    // To improve performance, the lock is not taken when the allocation logic is called
     static if (isShared)
     SpinLock lock = SpinLock(SpinLock.Contention.brief);
 
-    private void moveToFront(AlignedBlockNode *tmp)
+    // Moves a node to the front of the list, allowing for quick allocations
+    void moveToFront(AlignedBlockNode* tmp)
     {
         auto localRoot = cast(AlignedBlockNode*) root;
         if (tmp == localRoot)
@@ -55,11 +68,10 @@ private:
         root = cast(typeof(root)) tmp;
     }
 
-    private void removeNode(AlignedBlockNode* tmp)
+    // Removes a node from the list, including its payload
+    // The payload is deallocated by calling 'parent.deallocate'
+    void removeNode(AlignedBlockNode* tmp)
     {
-        static if (isShared)
-        import core.atomic : atomicOp;
-
         auto next = tmp.next;
         if (tmp.prev) tmp.prev.next = tmp.next;
         if (tmp.next) tmp.next.prev = tmp.prev;
@@ -70,6 +82,7 @@ private:
 
         static if (isShared)
         {
+            import core.atomic : atomicOp;
             atomicOp!"-="(numNodes, 1);
         }
         else
@@ -78,17 +91,20 @@ private:
         }
     }
 
-    private bool insertNewNode()
+    // If the nodes do not have available space, a new node is created
+    // by drawing memory from the parent allocator with aligned allocations.
+    // The new node is inserted at the front of the list
+    bool insertNewNode()
     {
-        static if (isShared)
-        import core.atomic : atomicOp;
-
         void[] buf = parent.alignedAllocate(alignment, alignment);
         if (buf is null)
             return false;
 
         auto localRoot = cast(AlignedBlockNode*) root;
         auto newNode = cast(AlignedBlockNode*) buf;
+
+        // The first part of the allocation represent the node contents
+        // followed by the actual payload
         ubyte[] payload = cast(ubyte[]) buf[AlignedBlockNode.sizeof .. $];
         newNode.bAlloc = Allocator(payload);
 
@@ -100,6 +116,7 @@ private:
 
         static if (isShared)
         {
+            import core.atomic : atomicOp;
             atomicOp!"+="(numNodes, 1);
         }
         else
@@ -124,9 +141,6 @@ public:
 
     bool deallocate(void[] b)
     {
-        static if (isShared)
-        import core.atomic : atomicOp;
-
         if (b is null)
             return true;
 
@@ -139,6 +153,7 @@ public:
         {
             static if (isShared)
             {
+                import core.atomic : atomicOp;
                 atomicOp!"-="(node.bytesUsed, b.length);
             }
             else
@@ -173,6 +188,7 @@ public:
             auto next = tmp.next;
             static if (isShared)
             {
+                // Allocations can happen outside the lock
                 // Make sure nobody deletes this node while using it
                 tmp.keepAlive++;
                 if (next) next.keepAlive++;
@@ -182,6 +198,7 @@ public:
             auto result = tmp.bAlloc.allocate(n);
             if (result.length == n)
             {
+                // Success
                 static if (isShared)
                 {
                     atomicOp!"+="(tmp.bytesUsed, n);
@@ -192,6 +209,8 @@ public:
                     tmp.bytesUsed += n;
                 }
 
+                // Most likely this node has memory for more allocations
+                // Move it to the front
                 moveToFront(tmp);
 
                 static if (isShared)
@@ -257,6 +276,7 @@ public:
         return result;
     }
 
+    // goodAllocSize should not use state
     size_t goodAllocSize(const size_t n)
     {
         Allocator a = null;
@@ -289,6 +309,11 @@ struct AlignedBlockList(Allocator, ParentAllocator, ulong theAlignment = (1 << 2
         and moves it to the front of the list.
 
         All empty nodes which cannot return new memory, are removed from the list.
+
+        Params:
+            n = bytes to allocate
+        Returns:
+            A chunk of memory of the required length or `null` on failure or
         */
         static if (hasMember!(ParentAllocator, "alignedAllocate"))
         void[] allocate(size_t n);
@@ -298,12 +323,22 @@ struct AlignedBlockList(Allocator, ParentAllocator, ulong theAlignment = (1 << 2
         time, regardless of the number of nodes in the list. `b.ptr` is rounded down
         to the nearest multiple of the `alignment` to quickly find the corresponding
         `AlignedBlockNode`.
+
+        Params:
+            b = buffer candidate for deallocation
+        Returns:
+            `true` on success and `false` on failure
         */
         bool deallocate(void[] b);
 
         /**
         Returns `Ternary.yes` if the buffer belongs to the parent allocator and
         `Ternary.no` otherwise.
+
+        Params:
+            b = buffer tested if owned by this allocator
+        Returns:
+            `Ternary.yes` if owned by this allocator and `Ternary.no` otherwise
         */
         static if (hasMember!(ParentAllocator, "owns"))
         Ternary owns(void[] b);
@@ -386,6 +421,11 @@ shared struct SharedAlignedBlockList(Allocator, ParentAllocator, ulong theAlignm
         and moves it to the front of the list.
 
         All empty nodes which cannot return new memory, are removed from the list.
+
+        Params:
+            n = bytes to allocate
+        Returns:
+            A chunk of memory of the required length or `null` on failure or
         */
         static if (hasMember!(ParentAllocator, "alignedAllocate"))
         void[] allocate(size_t n);
@@ -395,12 +435,22 @@ shared struct SharedAlignedBlockList(Allocator, ParentAllocator, ulong theAlignm
         time, regardless of the number of nodes in the list. `b.ptr` is rounded down
         to the nearest multiple of the `alignment` to quickly find the corresponding
         `AlignedBlockNode`.
+
+        Params:
+            b = buffer candidate for deallocation
+        Returns:
+            `true` on success and `false` on failure
         */
         bool deallocate(void[] b);
 
         /**
         Returns `Ternary.yes` if the buffer belongs to the parent allocator and
         `Ternary.no` otherwise.
+
+        Params:
+            b = buffer tested if owned by this allocator
+        Returns:
+            `Ternary.yes` if owned by this allocator and `Ternary.no` otherwise
         */
         static if (hasMember!(ParentAllocator, "owns"))
         Ternary owns(void[] b);
@@ -511,7 +561,7 @@ version (unittest)
 
     void fun()
     {
-        auto rnd = Random();
+        auto rnd = Random(1000);
 
         foreach(i; 0 .. maxIter)
         {
@@ -577,7 +627,7 @@ version (unittest)
     a.allocatorForSize!512.parent = &pageAlloc;
     a.allocatorForSize!256.parent = &pageAlloc;
 
-    auto rnd = Random();
+    auto rnd = Random(1000);
 
     size_t maxIter = 10;
     enum testNum = 10;
