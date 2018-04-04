@@ -3,7 +3,7 @@
 /**
  * Contains the elementary mathematical functions (powers, roots,
  * and trigonometric functions), and low-level floating-point operations.
- * Mathematical special functions are available in $(D std.mathspecial).
+ * Mathematical special functions are available in `std.mathspecial`.
  *
 $(SCRIPT inhibitQuickIndex = 1;)
 
@@ -1962,24 +1962,13 @@ real exp(real x) @trusted pure nothrow @nogc
         else
             static assert(0, "Not implemented for this architecture");
 
-        // Special cases. Raises an overflow or underflow flag accordingly,
-        // except in the case for CTFE, where there are no hardware controls.
+        // Special cases.
         if (isNaN(x))
             return x;
         if (x > OF)
-        {
-            if (__ctfe)
-                return real.infinity;
-            else
-                return real.max * copysign(real.max, real.infinity);
-        }
+            return real.infinity;
         if (x < UF)
-        {
-            if (__ctfe)
-                return 0.0;
-            else
-                return real.min_normal * copysign(real.min_normal, 0.0);
-        }
+            return 0.0;
 
         // Express: e^^x = e^^g * 2^^n
         //   = e^^g * e^^(n * LOG2E)
@@ -2256,15 +2245,9 @@ L_largenegative:
         enum real C1 = 6.9314575195312500000000E-1L;
         enum real C2 = 1.428606820309417232121458176568075500134E-6L;
 
-        // Special cases. Raises an overflow flag, except in the case
-        // for CTFE, where there are no hardware controls.
+        // Special cases.
         if (x > OF)
-        {
-            if (__ctfe)
-                return real.infinity;
-            else
-                return real.max * copysign(real.max, real.infinity);
-        }
+            return real.infinity;
         if (x == 0.0)
             return x;
         if (x < UF)
@@ -2568,24 +2551,13 @@ private real exp2Impl(real x) @nogc @trusted pure nothrow
     enum real OF =  16_384.0L;
     enum real UF = -16_382.0L;
 
-    // Special cases. Raises an overflow or underflow flag accordingly,
-    // except in the case for CTFE, where there are no hardware controls.
+    // Special cases.
     if (isNaN(x))
         return x;
     if (x > OF)
-    {
-        if (__ctfe)
-            return real.infinity;
-        else
-            return real.max * copysign(real.max, real.infinity);
-    }
+        return real.infinity;
     if (x < UF)
-    {
-        if (__ctfe)
-            return 0.0;
-        else
-            return real.min_normal * copysign(real.min_normal, 0.0);
-    }
+        return 0.0;
 
     // Separate into integer and fractional parts.
     int n = cast(int) floor(x + 0.5);
@@ -2629,7 +2601,9 @@ private real exp2Impl(real x) @nogc @trusted pure nothrow
         ctrl.disableExceptions(FloatingPointControl.allExceptions);
     ctrl.rounding = FloatingPointControl.roundToNearest;
 
-    static if (real.mant_dig == 113)
+    alias F = floatTraits!real;
+
+    static if (F.realFormat == RealFormat.ieeeQuadruple)
     {
         static immutable real[2][] exptestpoints =
         [ //  x               exp(x)
@@ -2648,7 +2622,7 @@ private real exp2Impl(real x) @nogc @trusted pure nothrow
             [-0x1p+30L,       0                                        ], // far underflow
         ];
     }
-    else static if (real.mant_dig == 64) // 80-bit reals
+    else static if (F.realFormat == RealFormat.ieeeExtended)
     {
         static immutable real[2][] exptestpoints =
         [ //  x               exp(x)
@@ -2667,7 +2641,7 @@ private real exp2Impl(real x) @nogc @trusted pure nothrow
             [-0x1p+30L,       0                            ], // far underflow
         ];
     }
-    else static if (real.mant_dig == 53) // 64-bit reals
+    else static if (F.realFormat == RealFormat.ieeeDouble)
     {
         static immutable real[2][] exptestpoints =
         [ //  x,             exp(x)
@@ -2695,27 +2669,9 @@ private real exp2Impl(real x) @nogc @trusted pure nothrow
     {
         resetIeeeFlags();
         x = exp(pair[0]);
-        f = ieeeFlags;
         assert(feqrel(x, pair[1]) >= minEqualMantissaBits);
-
-        version (IeeeFlagsSupport)
-        {
-            // Check the overflow bit
-            if (x == real.infinity)
-            {
-                // don't care about the overflow bit if input was inf
-                // (e.g., the LLVM intrinsic doesn't set it on Linux x86_64)
-                assert(pair[0] == real.infinity || f.overflow);
-            }
-            else
-                assert(!f.overflow);
-            // Check the underflow bit
-            assert(f.underflow == (fabs(x) < real.min_normal));
-            // Invalid and div by zero shouldn't be affected.
-            assert(!f.invalid);
-            assert(!f.divByZero);
-        }
     }
+
     // Ideally, exp(0) would not set the inexact flag.
     // Unfortunately, fldl2e sets it!
     // So it's not realistic to avoid setting it.
@@ -3261,8 +3217,34 @@ if (isIntegral!T && isSigned!T)
     return ilogb(absx);
 }
 
+///
+@safe pure unittest
+{
+    assert(ilogb(1) == 0);
+    assert(ilogb(3) == 1);
+    assert(ilogb(3.0) == 1);
+    assert(ilogb(100_000_000) == 26);
+
+    assert(ilogb(0) == FP_ILOGB0);
+    assert(ilogb(0.0) == FP_ILOGB0);
+    assert(ilogb(double.nan) == FP_ILOGBNAN);
+    assert(ilogb(double.infinity) == int.max);
+}
+
+/**
+Special return values of $(LREF ilogb).
+ */
 alias FP_ILOGB0   = core.stdc.math.FP_ILOGB0;
+/// ditto
 alias FP_ILOGBNAN = core.stdc.math.FP_ILOGBNAN;
+
+///
+@safe pure unittest
+{
+    assert(ilogb(0) == FP_ILOGB0);
+    assert(ilogb(0.0) == FP_ILOGB0);
+    assert(ilogb(double.nan) == FP_ILOGBNAN);
+}
 
 @safe nothrow @nogc unittest
 {
@@ -3724,18 +3706,18 @@ real log10(real x) @safe pure nothrow @nogc
     assert(fabs(log10(1000) - 3) < .000001);
 }
 
-/******************************************
- *      Calculates the natural logarithm of 1 + x.
+/**
+ * Calculates the natural logarithm of 1 + x.
  *
- *      For very small x, log1p(x) will be more accurate than
- *      log(1 + x).
+ * For very small x, log1p(x) will be more accurate than
+ * log(1 + x).
  *
  *  $(TABLE_SV
  *  $(TR $(TH x)            $(TH log1p(x))     $(TH divide by 0?) $(TH invalid?))
  *  $(TR $(TD $(PLUSMN)0.0) $(TD $(PLUSMN)0.0) $(TD no)           $(TD no))
  *  $(TR $(TD -1.0)         $(TD -$(INFIN))    $(TD yes)          $(TD no))
- *  $(TR $(TD $(LT)-1.0)    $(TD $(NAN))       $(TD no)           $(TD yes))
- *  $(TR $(TD +$(INFIN))    $(TD -$(INFIN))    $(TD no)           $(TD no))
+ *  $(TR $(TD $(LT)-1.0)    $(TD -$(NAN))      $(TD no)           $(TD yes))
+ *  $(TR $(TD +$(INFIN))    $(TD +$(INFIN))    $(TD no)           $(TD no))
  *  )
  */
 real log1p(real x) @safe pure nothrow @nogc
@@ -3760,6 +3742,19 @@ real log1p(real x) @safe pure nothrow @nogc
 
         return log(x + 1.0);
     }
+}
+
+///
+@safe pure unittest
+{
+    assert(log1p(0.0).feqrel(0.0) > 16);
+    assert(log1p(1.0).feqrel(0.69314) > 16);
+
+    assert(log1p(-1.0) == -real.infinity);
+    assert(log1p(-2.0) is -real.nan);
+    assert(log1p(real.nan) is real.nan);
+    assert(log1p(-real.nan) is -real.nan);
+    assert(log1p(real.infinity) == real.infinity);
 }
 
 /***************************************
@@ -3895,6 +3890,17 @@ real logb(real x) @trusted nothrow @nogc
     }
     else
         return core.stdc.math.logbl(x);
+}
+
+///
+@safe @nogc nothrow unittest
+{
+    assert(logb(1.0).feqrel(0.0) > 16);
+    assert(logb(100.0).feqrel(6.0) > 16);
+
+    assert(logb(0.0) == -real.infinity);
+    assert(logb(real.infinity) == real.infinity);
+    assert(logb(-real.infinity) == real.infinity);
 }
 
 /************************************
@@ -4261,7 +4267,7 @@ real ceil(real x) @trusted pure nothrow @nogc
     assert(isNaN(ceil(real.init)));
 }
 
-// ditto
+/// ditto
 double ceil(double x) @trusted pure nothrow @nogc
 {
     // Special cases.
@@ -4289,7 +4295,7 @@ double ceil(double x) @trusted pure nothrow @nogc
     assert(isNaN(ceil(double.init)));
 }
 
-// ditto
+/// ditto
 float ceil(float x) @trusted pure nothrow @nogc
 {
     // Special cases.
@@ -4387,7 +4393,7 @@ real floor(real x) @trusted pure nothrow @nogc
     assert(isNaN(floor(real.init)));
 }
 
-// ditto
+/// ditto
 double floor(double x) @trusted pure nothrow @nogc
 {
     // Special cases.
@@ -4413,7 +4419,7 @@ double floor(double x) @trusted pure nothrow @nogc
     assert(isNaN(floor(double.init)));
 }
 
-// ditto
+/// ditto
 float floor(float x) @trusted pure nothrow @nogc
 {
     // Special cases.
@@ -4536,24 +4542,44 @@ if (is(typeof(rfunc(F.init)) : F) && isFloatingPoint!F)
  *
  * Unlike the rint functions, nearbyint does not raise the
  * FE_INEXACT exception.
+ *
+ * Note:
+ *     Not implemented for Microsoft C Runtime
  */
-real nearbyint(real x) @trusted nothrow @nogc
+real nearbyint(real x) @safe pure nothrow @nogc
 {
     version (CRuntime_Microsoft)
-    {
-        assert(0);      // not implemented in C library
-    }
+        assert(0, "nearbyintl not implemented in Microsoft C library");
     else
         return core.stdc.math.nearbyintl(x);
+}
+
+///
+@safe pure unittest
+{
+    version (CRuntime_Microsoft) {}
+    else
+    {
+        assert(nearbyint(0.4) == 0);
+        assert(nearbyint(0.5) == 0);
+        assert(nearbyint(0.6) == 1);
+        assert(nearbyint(100.0) == 100);
+
+        assert(isNaN(nearbyint(real.nan)));
+        assert(nearbyint(real.infinity) == real.infinity);
+        assert(nearbyint(-real.infinity) == -real.infinity);
+    }
 }
 
 /**********************************
  * Rounds x to the nearest integer value, using the current rounding
  * mode.
+ *
  * If the return value is not equal to x, the FE_INEXACT
  * exception is raised.
- * $(B nearbyint) performs
- * the same operation, but does not set the FE_INEXACT exception.
+ *
+ * $(LREF nearbyint) performs the same operation, but does
+ * not set the FE_INEXACT exception.
  */
 real rint(real x) @safe pure nothrow @nogc { pragma(inline, true); return core.math.rint(x); }
 //FIXME
@@ -4562,6 +4588,22 @@ double rint(double x) @safe pure nothrow @nogc { return rint(cast(real) x); }
 //FIXME
 ///ditto
 float rint(float x) @safe pure nothrow @nogc { return rint(cast(real) x); }
+
+///
+@safe unittest
+{
+    resetIeeeFlags();
+    assert(rint(0.4) == 0);
+    assert(ieeeFlags.inexact);
+
+    assert(rint(0.5) == 0);
+    assert(rint(0.6) == 1);
+    assert(rint(100.0) == 100);
+
+    assert(isNaN(rint(real.nan)));
+    assert(rint(real.infinity) == real.infinity);
+    assert(rint(-real.infinity) == -real.infinity);
+}
 
 @safe unittest
 {
@@ -4779,8 +4821,11 @@ static if (real.mant_dig >= long.sizeof * 8)
  * Return the value of x rounded to the nearest integer.
  * If the fractional part of x is exactly 0.5, the return value is
  * rounded away from zero.
+ *
+ * Returns:
+ *     A `real`.
  */
-real round(real x) @trusted nothrow @nogc
+auto round(real x) @trusted nothrow @nogc
 {
     version (CRuntime_Microsoft)
     {
@@ -4794,6 +4839,24 @@ real round(real x) @trusted nothrow @nogc
     }
     else
         return core.stdc.math.roundl(x);
+}
+
+///
+@safe nothrow @nogc unittest
+{
+    assert(round(4.5) == 5);
+    assert(round(5.4) == 5);
+    assert(round(-4.5) == -5);
+    assert(round(-5.1) == -5);
+}
+
+// assure purity on Posix
+version(Posix)
+{
+    @safe pure nothrow @nogc unittest
+    {
+        assert(round(4.5) == 5);
+    }
 }
 
 /**********************************************
@@ -4812,9 +4875,10 @@ long lround(real x) @trusted nothrow @nogc
         assert(0, "lround not implemented");
 }
 
-version(Posix)
+///
+@safe nothrow @nogc unittest
 {
-    @safe nothrow @nogc unittest
+    version(Posix)
     {
         assert(lround(0.49) == 0);
         assert(lround(0.5) == 1);
@@ -4822,52 +4886,77 @@ version(Posix)
     }
 }
 
-/****************************************************
- * Returns the integer portion of x, dropping the fractional portion.
- *
- * This is also known as "chop" rounding.
- */
-real trunc(real x) @trusted nothrow @nogc
+version(StdDdoc)
 {
-    version (Win64_DMD_InlineAsm)
+    /**
+     Returns the integer portion of x, dropping the fractional portion.
+
+     This is also known as "chop" rounding.
+
+     `pure` on all platforms but DragonFlyBSD.
+     */
+    real trunc(real x) @trusted nothrow @nogc pure;
+
+    ///
+    @safe pure unittest
     {
-        asm pure nothrow @nogc
-        {
-            naked                       ;
-            fld     real ptr [RCX]      ;
-            fstcw   8[RSP]              ;
-            mov     AL,9[RSP]           ;
-            mov     DL,AL               ;
-            and     AL,0xC3             ;
-            or      AL,0x0C             ; // round to 0
-            mov     9[RSP],AL           ;
-            fldcw   8[RSP]              ;
-            frndint                     ;
-            mov     9[RSP],DL           ;
-            fldcw   8[RSP]              ;
-            ret                         ;
-        }
+        assert(trunc(0.01) == 0);
+        assert(trunc(0.49) == 0);
+        assert(trunc(0.5) == 0);
+        assert(trunc(1.5) == 1);
     }
-    else version(CRuntime_Microsoft)
+}
+else version (DragonFlyBSD)
+{
+    real trunc(real x) @trusted nothrow @nogc
     {
-        short cw;
-        asm pure nothrow @nogc
-        {
-            fld     x                   ;
-            fstcw   cw                  ;
-            mov     AL,byte ptr cw+1    ;
-            mov     DL,AL               ;
-            and     AL,0xC3             ;
-            or      AL,0x0C             ; // round to 0
-            mov     byte ptr cw+1,AL    ;
-            fldcw   cw                  ;
-            frndint                     ;
-            mov     byte ptr cw+1,DL    ;
-            fldcw   cw                  ;
-        }
-    }
-    else
         return core.stdc.math.truncl(x);
+    }
+}
+else
+{
+    real trunc(real x) @trusted nothrow @nogc pure
+    {
+        version (Win64_DMD_InlineAsm)
+        {
+            asm pure nothrow @nogc
+            {
+                naked                       ;
+                fld     real ptr [RCX]      ;
+                fstcw   8[RSP]              ;
+                mov     AL,9[RSP]           ;
+                mov     DL,AL               ;
+                and     AL,0xC3             ;
+                or      AL,0x0C             ; // round to 0
+                mov     9[RSP],AL           ;
+                fldcw   8[RSP]              ;
+                frndint                     ;
+                mov     9[RSP],DL           ;
+                fldcw   8[RSP]              ;
+                ret                         ;
+            }
+        }
+        else version(CRuntime_Microsoft)
+        {
+            short cw;
+            asm pure nothrow @nogc
+            {
+                fld     x                   ;
+                fstcw   cw                  ;
+                mov     AL,byte ptr cw+1    ;
+                mov     DL,AL               ;
+                and     AL,0xC3             ;
+                or      AL,0x0C             ; // round to 0
+                mov     byte ptr cw+1,AL    ;
+                fldcw   cw                  ;
+                frndint                     ;
+                mov     byte ptr cw+1,DL    ;
+                fldcw   cw                  ;
+            }
+        }
+        else
+            return core.stdc.math.truncl(x);
+    }
 }
 
 /****************************************************
@@ -4880,7 +4969,7 @@ real trunc(real x) @trusted nothrow @nogc
  * Otherwise, the sign of the result is the sign of x / y.
  * Precision mode has no effect on the remainder functions.
  *
- * remquo returns n in the parameter n.
+ * remquo returns `n` in the parameter `n`.
  *
  * $(TABLE_SV
  *  $(TR $(TH x)               $(TH y)            $(TH remainder(x, y)) $(TH n)   $(TH invalid?))
@@ -4903,6 +4992,7 @@ real remainder(real x, real y) @trusted nothrow @nogc
         return core.stdc.math.remainderl(x, y);
 }
 
+/// ditto
 real remquo(real x, real y, out int n) @trusted nothrow @nogc  /// ditto
 {
     version (Posix)
@@ -5644,7 +5734,7 @@ version(D_HardFloat) @safe unittest // rounding
  * Params:
  *  x = a floating point number.
  * Returns:
- *  $(D true) if $(D_PARAM x) is Nan.
+ *  `true` if $(D_PARAM x) is Nan.
  */
 bool isNaN(X)(X x) @nogc @trusted pure nothrow
 if (isFloatingPoint!(X))
@@ -5732,7 +5822,7 @@ if (isFloatingPoint!(X))
  * Params:
  *  x = a floating point number.
  * Returns:
- *  $(D true) if $(D_PARAM x) is finite.
+ *  `true` if $(D_PARAM x) is finite.
  */
 bool isFinite(X)(X x) @trusted pure nothrow @nogc
 {
@@ -5775,7 +5865,7 @@ bool isFinite(X)(X x) @trusted pure nothrow @nogc
  * Params:
  *  x = a floating point number.
  * Returns:
- *  $(D true) if $(D_PARAM x) is normalized.
+ *  `true` if $(D_PARAM x) is normalized.
  */
 
 /* Need one for each format because subnormal floats might
@@ -5825,7 +5915,7 @@ bool isNormal(X)(X x) @trusted pure nothrow @nogc
  * Params:
  *  x = a floating point number.
  * Returns:
- *  $(D true) if $(D_PARAM x) is a denormal number.
+ *  `true` if $(D_PARAM x) is a denormal number.
  */
 bool isSubnormal(X)(X x) @trusted pure nothrow @nogc
 {
@@ -5887,7 +5977,7 @@ bool isSubnormal(X)(X x) @trusted pure nothrow @nogc
  * Params:
  *  x = a floating point number.
  * Returns:
- *  $(D true) if $(D_PARAM x) is $(PLUSMN)$(INFIN).
+ *  `true` if $(D_PARAM x) is $(PLUSMN)$(INFIN).
  */
 bool isInfinity(X)(X x) @nogc @trusted pure nothrow
 if (isFloatingPoint!(X))
@@ -6130,7 +6220,7 @@ if (isIntegral!(X) && isFloatingPoint!(R))
 }
 
 /*********************************
-Returns $(D -1) if $(D x < 0), $(D x) if $(D x == 0), $(D 1) if
+Returns `-1` if $(D x < 0), `x` if $(D x == 0), `1` if
 $(D x > 0), and $(NAN) if x==$(NAN).
  */
 F sgn(F)(F x) @safe pure nothrow @nogc
@@ -8073,8 +8163,8 @@ bool approxEqual(T, U)(T lhs, U rhs)
  * )
  *
  * Returns:
- *      negative value if $(D x) precedes $(D y) in the order specified above;
- *      0 if $(D x) and $(D y) are identical, and positive value otherwise.
+ *      negative value if `x` precedes `y` in the order specified above;
+ *      0 if `x` and `y` are identical, and positive value otherwise.
  *
  * See_Also:
  *      $(MYREF isIdentical)
@@ -8332,7 +8422,7 @@ private T powFloatingPointImpl(PowType type, T)(T x)
 }
 
 /**
- * Gives the next power of two after $(D val). `T` can be any built-in
+ * Gives the next power of two after `val`. `T` can be any built-in
  * numerical type.
  *
  * If the operation would lead to an over/underflow, this function will
@@ -8342,7 +8432,7 @@ private T powFloatingPointImpl(PowType type, T)(T x)
  *     val = any number
  *
  * Returns:
- *     the next power of two after $(D val)
+ *     the next power of two after `val`
  */
 T nextPow2(T)(const T val)
 if (isIntegral!T)
@@ -8460,14 +8550,14 @@ if (isFloatingPoint!T)
 }
 
 /**
- * Gives the last power of two before $(D val). $(T) can be any built-in
+ * Gives the last power of two before `val`. $(T) can be any built-in
  * numerical type.
  *
  * Params:
  *     val = any number
  *
  * Returns:
- *     the last power of two before $(D val)
+ *     the last power of two before `val`
  */
 T truncPow2(T)(const T val)
 if (isIntegral!T)
