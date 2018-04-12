@@ -24,7 +24,7 @@ An embedded list builds a most-recently-used strategy: the most recent
 allocators used in calls to either `allocate`, `owns` (successful calls
 only), or `deallocate` are tried for new allocations in order of their most
 recent use. Thus, although core operations take in theory $(BIGOH k) time for
-$(D k) allocators in current use, in many workloads the factor is sublinear.
+`k` allocators in current use, in many workloads the factor is sublinear.
 Details of the actual strategy may change in future releases.
 
 `AllocatorList` is primarily intended for coarse-grained handling of
@@ -48,18 +48,18 @@ needs state, a `Factory` object should be used.
 
 BookkeepingAllocator = Allocator used for storing bookkeeping data. The size of
 bookkeeping data is proportional to the number of allocators. If $(D
-BookkeepingAllocator) is $(D NullAllocator), then $(D AllocatorList) is
+BookkeepingAllocator) is `NullAllocator`, then `AllocatorList` is
 "ouroboros-style", i.e. it keeps the bookkeeping data in memory obtained from
 the allocators themselves. Note that for ouroboros-style management, the size
-$(D n) passed to $(D make) will be occasionally different from the size
+`n` passed to `make` will be occasionally different from the size
 requested by client code.
 
 Factory = Type of a factory object that returns new allocators on a need
-basis. For an object $(D sweatshop) of type $(D Factory), `sweatshop(n)` should
+basis. For an object `sweatshop` of type `Factory`, `sweatshop(n)` should
 return an allocator able to allocate at least `n` bytes (i.e. `Factory` must
 define `opCall(size_t)` to return an allocator object). Usually the capacity of
-allocators created should be much larger than $(D n) such that an allocator can
-be used for many subsequent allocations. $(D n) is passed only to ensure the
+allocators created should be much larger than `n` such that an allocator can
+be used for many subsequent allocations. `n` is passed only to ensure the
 minimum necessary for the next allocation. The factory object is allowed to hold
 state, which will be stored inside `AllocatorList` as a direct `public` member
 called `factory`.
@@ -100,7 +100,7 @@ struct AllocatorList(Factory, BookkeepingAllocator = GCAllocator)
     }
 
     /**
-    If $(D BookkeepingAllocator) is not $(D NullAllocator), $(D bkalloc) is
+    If `BookkeepingAllocator` is not `NullAllocator`, `bkalloc` is
     defined and accessible.
     */
 
@@ -158,11 +158,11 @@ struct AllocatorList(Factory, BookkeepingAllocator = GCAllocator)
     enum uint alignment = Allocator.alignment;
 
     /**
-    Allocate a block of size $(D s). First tries to allocate from the existing
+    Allocate a block of size `s`. First tries to allocate from the existing
     list of already-created allocators. If neither can satisfy the request,
-    creates a new allocator by calling $(D make(s)) and delegates the request
+    creates a new allocator by calling `make(s)` and delegates the request
     to it. However, if the allocation fresh off a newly created allocator
-    fails, subsequent calls to $(D allocate) will not cause more calls to $(D
+    fails, subsequent calls to `allocate` will not cause more calls to $(D
     make).
     */
     void[] allocate(size_t s)
@@ -376,8 +376,8 @@ struct AllocatorList(Factory, BookkeepingAllocator = GCAllocator)
     }
 
     /**
-    Defined only if $(D Allocator.expand) is defined. Finds the owner of $(D b)
-    and calls $(D expand) for it. The owner is not brought to the head of the
+    Defined only if `Allocator.expand` is defined. Finds the owner of `b`
+    and calls `expand` for it. The owner is not brought to the head of the
     list.
     */
     static if (hasMember!(Allocator, "expand")
@@ -393,9 +393,9 @@ struct AllocatorList(Factory, BookkeepingAllocator = GCAllocator)
     }
 
     /**
-    Defined only if $(D Allocator.reallocate) is defined. Finds the owner of
-    $(D b) and calls $(D reallocate) for it. If that fails, calls the global
-    $(D reallocate), which allocates a new block and moves memory.
+    Defined only if `Allocator.reallocate` is defined. Finds the owner of
+    `b` and calls `reallocate` for it. If that fails, calls the global
+    `reallocate`, which allocates a new block and moves memory.
     */
     static if (hasMember!(Allocator, "reallocate"))
     bool reallocate(ref void[] b, size_t s)
@@ -415,7 +415,7 @@ struct AllocatorList(Factory, BookkeepingAllocator = GCAllocator)
     }
 
     /**
-     Defined if $(D Allocator.deallocate) and $(D Allocator.owns) are defined.
+     Defined if `Allocator.deallocate` and `Allocator.owns` are defined.
     */
     static if (hasMember!(Allocator, "deallocate")
         && hasMember!(Allocator, "owns"))
@@ -457,7 +457,7 @@ struct AllocatorList(Factory, BookkeepingAllocator = GCAllocator)
     }
 
     /**
-    Defined only if $(D Allocator.owns) and $(D Allocator.deallocateAll) are
+    Defined only if `Allocator.owns` and `Allocator.deallocateAll` are
     defined.
     */
     static if (ouroboros && hasMember!(Allocator, "deallocateAll")
@@ -546,6 +546,567 @@ template AllocatorList(alias factoryFunction,
         A opCall(size_t n) { return factoryFunction(n); }
     }
     alias AllocatorList = .AllocatorList!(Factory, BookkeepingAllocator);
+}
+
+shared struct SharedAllocatorList(Factory, BookkeepingAllocator = GCAllocator)
+{
+    import core.internal.spinlock : SpinLock;
+    import std.conv : emplace;
+    import std.traits : hasMember;
+    import std.typecons : Ternary;
+
+    SpinLock lock = SpinLock(SpinLock.Contention.brief);
+    private enum ouroboros = is(BookkeepingAllocator == NullAllocator);
+
+    /**
+    Alias for `typeof(Factory()(1))`, i.e. the type of the individual
+    allocators.
+    */
+    alias Allocator = typeof(Factory.init(1));
+    // Allocator used internally
+    private alias SAllocator = Allocator;
+
+    private static struct Node
+    {
+        // Allocator in this node
+        SAllocator a;
+        Node* next;
+        shared(size_t) bytesUsed;
+        @disable this(this);
+
+        // Is this node unused?
+        void setUnused() shared { next = &this; }
+        bool unused() shared const { return next is &this; }
+
+        // Just forward everything to the allocator
+        alias a this;
+    }
+
+    /**
+    If `BookkeepingAllocator` is not `NullAllocator`, `bkalloc` is
+    defined and accessible.
+    */
+
+    // State is stored in an array, but it has a list threaded through it by
+    // means of "nextIdx".
+
+    // state
+    static if (!ouroboros)
+    {
+        static if (stateSize!BookkeepingAllocator) BookkeepingAllocator bkalloc;
+        else alias bkalloc = BookkeepingAllocator.instance;
+    }
+    static if (stateSize!Factory)
+    {
+        Factory factory;
+    }
+    private Node[] allocators;
+    private Node* root;
+
+    static if (stateSize!Factory)
+    {
+        private auto make(size_t n) { return factory(n); }
+    }
+    else
+    {
+        private auto make(size_t n) { Factory f; return f(n); }
+    }
+
+    /**
+    Constructs an `AllocatorList` given a factory object. This constructor is
+    defined only if `Factory` has state.
+    */
+    static if (stateSize!Factory)
+    this(ref Factory plant)
+    {
+        factory = plant;
+    }
+    /// Ditto
+    static if (stateSize!Factory)
+    this(Factory plant)
+    {
+        factory = plant;
+    }
+
+    static if (hasMember!(Allocator, "deallocateAll")
+        && hasMember!(Allocator, "owns"))
+    ~this()
+    {
+        deallocateAll;
+    }
+
+    /**
+    The alignment offered.
+    */
+    enum uint alignment = Allocator.alignment;
+
+    /**
+    Allocate a block of size `s`. First tries to allocate from the existing
+    list of already-created allocators. If neither can satisfy the request,
+    creates a new allocator by calling `make(s)` and delegates the request
+    to it. However, if the allocation fresh off a newly created allocator
+    fails, subsequent calls to `allocate` will not cause more calls to $(D
+    make).
+    */
+    void[] allocate(size_t s)
+    {
+        lock.lock();
+        scope(exit) lock.unlock();
+        return allocateImpl(s);
+    }
+
+    void[] allocateImpl(size_t s)
+    {
+        import core.atomic : atomicOp;
+        for (auto p = &root, n = *p; n; p = &n.next, n = *p)
+        {
+            auto result = n.allocate(s);
+            if (result.length != s) continue;
+            // Bring to front if not already
+            if (root != n)
+            {
+                *p = n.next;
+                n.next = root;
+                root = n;
+            }
+            atomicOp!"+="(n.bytesUsed, result.length);
+            return result;
+        }
+        // Can't allocate from the current pool. Check if we just added a new
+        // allocator, in that case it won't do any good to add yet another.
+        if (root && root.bytesUsed == 0)
+        {
+            // no can do
+            return null;
+        }
+        // Add a new allocator
+        if (auto newNode = addAllocator(s))
+        {
+            auto result = newNode.a.allocate(s);
+            atomicOp!"+="(newNode.bytesUsed, result.length);
+            return result;
+        }
+        return null;
+    }
+
+    void[] alignedAllocate(size_t s, uint a)
+    {
+        lock.lock();
+        scope(exit) lock.unlock();
+        return alignedAllocateImpl(s, a);
+    }
+
+    void[] alignedAllocateImpl(size_t s, uint a)
+    {
+        import core.atomic : atomicOp;
+        for (auto p = &root, n = *p; n; p = &n.next, n = *p)
+        {
+            auto result = n.alignedAllocate(s, a);
+            if (result.length != s) continue;
+            // Bring to front if not already
+            if (root != n)
+            {
+                *p = n.next;
+                n.next = root;
+                root = n;
+            }
+            atomicOp!"+="(n.bytesUsed,result.length);
+            return result;
+        }
+        // Can't allocate from the current pool. Check if we just added a new
+        // allocator, in that case it won't do any good to add yet another.
+        if (root && root.bytesUsed == 0)
+        {
+            // no can do
+            return null;
+        }
+
+        // Add a new allocator
+        if (auto newNode = addAllocator(s))
+        {
+            auto result = newNode.a.alignedAllocate(s, a);
+            atomicOp!"+="(newNode.bytesUsed, result.length);
+            return result;
+        }
+
+        return null;
+    }
+
+    private void moveAllocators(void[] newPlace)
+    {
+        assert(newPlace.ptr.alignedAt(Node.alignof));
+        assert(newPlace.length % Node.sizeof == 0);
+        auto newAllocators = cast(Node[]) newPlace;
+        assert(allocators.length <= newAllocators.length);
+
+        // Move allocators
+        foreach (i, ref e; allocators)
+        {
+            if (e.unused)
+            {
+                (cast(shared(Node)) newAllocators[i]).setUnused;
+                continue;
+            }
+            import core.stdc.string : memcpy;
+            memcpy(cast(void*) &newAllocators[i].a, cast(void*) &e.a, e.a.sizeof);
+            if (e.next)
+            {
+                newAllocators[i].next = newAllocators.ptr
+                    + (e.next - allocators.ptr);
+            }
+            else
+            {
+                newAllocators[i].next = null;
+            }
+        }
+
+        // Mark the unused portion as unused
+        foreach (i; allocators.length .. newAllocators.length)
+        {
+            (cast(shared(Node)) newAllocators[i]).setUnused;
+        }
+        auto toFree = allocators;
+
+        // Change state
+        root = cast(typeof(root)) (newAllocators.ptr + (root - allocators.ptr));
+        allocators = cast(typeof(allocators)) newAllocators;
+
+        // Free the olden buffer
+        static if (ouroboros)
+        {
+            static if (hasMember!(Allocator, "deallocate")
+                    && hasMember!(Allocator, "owns"))
+                deallocateImpl(cast(void[]) toFree);
+        }
+        else
+        {
+            bkalloc.deallocate(toFree);
+        }
+    }
+
+    static if (ouroboros)
+    private Node* addAllocator(size_t atLeastBytes)
+    {
+        import std.stdio;
+        void[] t = cast(void[]) allocators;
+        static if (hasMember!(Allocator, "expand")
+            && hasMember!(Allocator, "owns"))
+        {
+            immutable bool expanded = t && this.expandImpl(t, Node.sizeof);
+        }
+        else
+        {
+            enum expanded = false;
+        }
+        if (expanded)
+        {
+            import std.c.string : memcpy;
+            assert(t.length % Node.sizeof == 0);
+            assert(t.ptr.alignedAt(Node.alignof));
+            allocators = cast(typeof(allocators)) t;
+            allocators[$ - 1].setUnused;
+            auto newAlloc = make(atLeastBytes);
+            memcpy(cast(void*) &allocators[$ - 1].a, cast(void*) &newAlloc, newAlloc.sizeof);
+            emplace(&newAlloc);
+        }
+        else
+        {
+            import core.atomic : atomicOp;
+            immutable toAlloc = (allocators.length + 1) * Node.sizeof
+                + atLeastBytes + 128;
+            auto newAlloc = make(toAlloc);
+            auto len =  (allocators.length + 1) * Node.sizeof;
+            auto newPlace = newAlloc.allocate(len);
+            if (!newPlace) return null;
+            moveAllocators(newPlace);
+            import core.stdc.string : memcpy;
+            memcpy(cast(void*) &allocators[$ - 1].a, cast(void*) &newAlloc, newAlloc.sizeof);
+            atomicOp!"+="(allocators[$ - 1].bytesUsed, len);
+            emplace(&newAlloc);
+        }
+        // Insert as new root
+        if (root != &allocators[$ - 1])
+        {
+            allocators[$ - 1].next = root;
+            root = &allocators[$ - 1];
+        }
+        else
+        {
+            // This is the first one
+            root.next = null;
+        }
+        assert(!root.unused);
+        return cast(Node*) root;
+    }
+
+    static if (!ouroboros)
+    private Node* addAllocator(size_t atLeastBytes)
+    {
+        void[] t = allocators;
+        static if (hasMember!(BookkeepingAllocator, "expand"))
+            immutable bool expanded = bkalloc.expand(t, Node.sizeof);
+        else
+            immutable bool expanded = false;
+        if (expanded)
+        {
+            assert(t.length % Node.sizeof == 0);
+            assert(t.ptr.alignedAt(Node.alignof));
+            allocators = cast(Node[]) t;
+            allocators[$ - 1].setUnused;
+        }
+        else
+        {
+            // Could not expand, create a new block
+            t = bkalloc.allocate((allocators.length + 1) * Node.sizeof);
+            assert(t.length % Node.sizeof == 0);
+            if (!t.ptr) return null;
+            moveAllocators(t);
+        }
+        assert(allocators[$ - 1].unused);
+        auto newAlloc = SAllocator(make(atLeastBytes));
+        import core.stdc.string : memcpy;
+        memcpy(&allocators[$ - 1].a, &newAlloc, newAlloc.sizeof);
+        emplace(&newAlloc);
+        // Creation succeeded, insert as root
+        if (allocators.length == 1)
+            allocators[$ - 1].next = null;
+        else
+            allocators[$ - 1].next = root;
+        root = &allocators[$ - 1];
+        return root;
+    }
+
+    /**
+    Defined only if `Allocator` defines `owns`. Tries each allocator in
+    turn, in most-recently-used order. If the owner is found, it is moved to
+    the front of the list as a side effect under the assumption it will be used
+    soon.
+
+    Returns: `Ternary.yes` if one allocator was found to return `Ternary.yes`,
+    `Ternary.no` if all component allocators returned `Ternary.no`, and
+    `Ternary.unknown` if no allocator returned `Ternary.yes` and at least one
+    returned  `Ternary.unknown`.
+    */
+    static if (hasMember!(Allocator, "owns"))
+    Ternary owns(void[] b)
+    {
+        lock.lock();
+        scope(exit) lock.unlock();
+        return ownsImpl(b);
+    }
+
+    static if (hasMember!(Allocator, "owns"))
+    Ternary ownsImpl(void[] b)
+    {
+        auto result = Ternary.no;
+        for (auto p = &root, n = *p; n; p = &n.next, n = *p)
+        {
+            immutable t = n.owns(b);
+            if (t != Ternary.yes)
+            {
+                if (t == Ternary.unknown) result = t;
+                continue;
+            }
+            // Move the owner to front, speculating it'll be used
+            if (n != root)
+            {
+                *p = n.next;
+                n.next = root;
+                root = n;
+            }
+            return Ternary.yes;
+        }
+        return result;
+    }
+
+    /**
+    Defined only if `Allocator.expand` is defined. Finds the owner of `b`
+    and calls `expand` for it. The owner is not brought to the head of the
+    list.
+    */
+    static if (hasMember!(Allocator, "expand")
+        && hasMember!(Allocator, "owns"))
+    bool expand(ref void[] b, size_t delta)
+    {
+        lock.lock();
+        scope(exit) lock.unlock();
+        return expandImpl(b, delta);
+    }
+
+    static if (hasMember!(Allocator, "expand")
+        && hasMember!(Allocator, "owns"))
+    bool expandImpl(ref void[] b, size_t delta)
+    {
+        import core.atomic : atomicOp;
+        if (!b) return delta == 0;
+        for (auto p = &root, n = *p; n; p = &n.next, n = *p)
+        {
+            if (n.owns(b) == Ternary.yes)
+            {
+                if (n.expand(b, delta))
+                {
+                    atomicOp!"+="(n.bytesUsed, delta);
+                    return true;
+                }
+                return false;
+            }
+        }
+        return false;
+    }
+
+    static if (hasMember!(Allocator, "deallocate")
+        && hasMember!(Allocator, "owns"))
+    bool deallocate(void[] b)
+    {
+        lock.lock();
+        scope(exit) lock.unlock();
+        return deallocateImpl(b);
+    }
+    /**
+     Defined if `Allocator.deallocate` and `Allocator.owns` are defined.
+    */
+    static if (hasMember!(Allocator, "deallocate")
+        && hasMember!(Allocator, "owns"))
+    bool deallocateImpl(void[] b)
+    {
+        import core.atomic : atomicOp;
+        if (!b.ptr) return true;
+        assert(allocators.length);
+        assert(owns(b) == Ternary.yes);
+        bool result;
+        for (auto p = &root, n = *p; ; p = &n.next, n = *p)
+        {
+            assert(n);
+            if (n.owns(b) != Ternary.yes) continue;
+            result = n.deallocate(b);
+            // Bring to front
+            if (n != root)
+            {
+                *p = n.next;
+                n.next = root;
+                root = n;
+            }
+            if (result) atomicOp!"+="(n.bytesUsed, b.length);
+            if (n.empty != Ternary.yes) return result;
+            break;
+        }
+        // Hmmm... should we return this allocator back to the wild? Let's
+        // decide if there are TWO empty allocators we can release ONE. This
+        // is to avoid thrashing.
+        // Note that loop starts from the second element.
+        for (auto p = &root.next, n = *p; n; p = &n.next, n = *p)
+        {
+            if (n.unused || n.empty != Ternary.yes) continue;
+            // Used and empty baby, nuke it!
+            n.a.destroy;
+            *p = n.next;
+            n.setUnused;
+            n.bytesUsed = 0;
+            break;
+        }
+        return result;
+    }
+
+    static if (hasMember!(Allocator, "deallocateAll")
+        && hasMember!(Allocator, "owns"))
+    bool deallocateAll()
+    {
+        lock.lock();
+        scope(exit) lock.unlock();
+        return deallocateAllImpl();
+    }
+
+    /**
+    Defined only if `Allocator.owns` and `Allocator.deallocateAll` are
+    defined.
+    */
+    static if (ouroboros && hasMember!(Allocator, "deallocateAll")
+        && hasMember!(Allocator, "owns"))
+    bool deallocateAllImpl()
+    {
+        Node* special;
+        foreach (ref n; allocators)
+        {
+            if (n.unused) continue;
+            if (n.owns(cast(void[]) allocators) == Ternary.yes)
+            {
+                special = cast(typeof(special)) &n;
+                continue;
+            }
+            n.a.deallocateAll;
+            n.a.destroy;
+        }
+        assert(special || !allocators.ptr);
+        if (special)
+        {
+            static if (stateSize!SAllocator)
+            {
+                import core.stdc.string : memcpy;
+                SAllocator specialCopy;
+                assert(special.a.sizeof == specialCopy.sizeof);
+                memcpy(cast(void*) &specialCopy, cast(void*) &special.a, specialCopy.sizeof);
+                emplace(&special.a);
+                specialCopy.deallocateAll();
+            }
+            else
+            {
+                special.deallocateAll();
+            }
+        }
+        allocators = null;
+        root = null;
+        return true;
+    }
+
+    static if (!ouroboros && hasMember!(Allocator, "deallocateAll")
+        && hasMember!(Allocator, "owns"))
+    bool deallocateAllImpl()
+    {
+        foreach (ref n; allocators)
+        {
+            if (n.unused) continue;
+            n.a.deallocateAll;
+            n.a.destroy;
+        }
+        bkalloc.deallocate(allocators);
+        allocators = null;
+        root = null;
+        return true;
+    }
+
+
+    /**
+     Returns `Ternary.yes` if no allocators are currently active,
+    `Ternary.no` otherwise. This methods never returns `Ternary.unknown`.
+    */
+    pure nothrow @safe @nogc
+    Ternary empty() const
+    {
+        return Ternary(!allocators.length);
+    }
+}
+
+/// Ditto
+template SharedAllocatorList(alias factoryFunction,
+    BookkeepingAllocator = GCAllocator)
+{
+    alias A = typeof(factoryFunction(1));
+    static assert(
+        // is a template function (including literals)
+        is(typeof({A function(size_t) @system x = factoryFunction!size_t;}))
+        ||
+        // or a function (including literals)
+        is(typeof({A function(size_t) @system x = factoryFunction;}))
+        ,
+        "Only function names and function literals that take size_t"
+            ~ " and return an allocator are accepted, not "
+            ~ typeof(factoryFunction).stringof
+    );
+    static struct Factory
+    {
+        A opCall(size_t n) { return factoryFunction(n); }
+    }
+    alias SharedAllocatorList = .SharedAllocatorList!(Factory, BookkeepingAllocator);
 }
 
 ///
@@ -780,4 +1341,28 @@ version(Posix) @system unittest
     assert(a.deallocate(b2));
 
     assert(a.deallocateAll());
+}
+
+@system unittest
+{
+    import std.experimental.allocator.building_blocks.ascending_page_allocator : SharedAscendingPageAllocator;
+    import std.experimental.allocator.mallocator : Mallocator;
+    import std.algorithm.comparison : max;
+    import std.typecons : Ternary;
+
+    enum pageSize = 4096;
+
+    static void testrw(void[] b)
+    {
+        ubyte* buf = cast(ubyte*) b.ptr;
+        for (int i = 0; i < b.length; i += pageSize)
+        {
+            buf[i] = cast(ubyte) (i % 256);
+            assert(buf[i] == cast(ubyte) (i % 256));
+        }
+    }
+
+    enum numPages = 100;
+    SharedAllocatorList!((n) => SharedAscendingPageAllocator(max(n, numPages * pageSize)), Mallocator) a;
+    a.allocate(100);
 }

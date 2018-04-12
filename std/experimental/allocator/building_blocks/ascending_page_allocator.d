@@ -694,6 +694,15 @@ public:
         b = cast(void[]) b.ptr[0 .. b.length + delta];
         return true;
     }
+
+    /**
+    Returns `Ternary.yes` if the allocator does not contain any alive objects
+    and `Ternary.no` otherwise.
+    */
+    Ternary empty() nothrow @nogc
+    {
+        return Ternary(false);
+    }
 }
 
 ///

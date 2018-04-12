@@ -15,7 +15,6 @@ import std.conv : to;
 void main(string[] args)
 {
     import std.stdio;
-    rootAllocator = SharedAscendingPageAllocator(1UL << 40);
 
     auto numNodes = args[1].to!int;
     auto numThreads = args[2].to!int;
@@ -27,7 +26,7 @@ void main(string[] args)
     {
         struct MediumStruct
         {
-            int[32] arr;
+            int[1 << 15] arr;
         }
 
         alias T = MediumStruct;
@@ -38,6 +37,7 @@ void main(string[] args)
         auto rnd = Random(1000);
         T[][] largeAllocs = (cast(T[][]) Mallocator.instance.allocate(numNodes * (T[]).sizeof))[0 .. numNodes];
         T*[] smallAllocs = (cast(T*[]) Mallocator.instance.allocate(numNodes * size_t.sizeof))[0 .. numNodes];
+
 
         if (smallTest)
         {
@@ -54,6 +54,7 @@ void main(string[] args)
 
                 for (int j = 0; j < numNodes; j++)
                 {
+                    assert(smallAllocs[j].arr[i] == j);
                     if (chooseAlloc)
                         tlAlloc.dispose(smallAllocs[j]);
                     else

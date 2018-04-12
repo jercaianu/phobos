@@ -224,6 +224,7 @@ Source: $(PHOBOSSRC std/experimental/_allocator)
 module std.experimental.allocator;
 
 import std.experimental.allocator.building_blocks.ascending_page_allocator;
+import std.experimental.allocator.building_blocks.allocator_list;
 import std.experimental.allocator.building_blocks.null_allocator;
 import std.experimental.allocator.building_blocks.segregator;
 public import std.experimental.allocator.common,
@@ -1077,84 +1078,86 @@ struct TypeAllocator(T)
     import std.experimental.allocator.building_blocks.aligned_block_list;
     import std.experimental.allocator.building_blocks.bitmapped_block;
     import std.experimental.allocator.building_blocks.ascending_page_allocator;
+    import std.experimental.allocator.building_blocks.allocator_list;
 
     enum blockSize = stateSize!T;
 
     bool isInit = 0;
+    alias RootType = typeof(rootAllocator);
 
     alias LocalObjectAllocator = AlignedBlockList!(
         BitmappedBlock!(roundUpToPowerOf2(blockSize), platformAlignment, NullAllocator, No.multiblock),
-        SharedAscendingPageAllocator*,
-        roundUpToPowerOf2(blockSize * 128));
+        RootType*,
+        roundUpToPowerOf2(blockSize * 1024));
 
     alias LocalArrayAllocator = Segregator!(
         16,
-        AlignedBlockList!(BitmappedBlock!(16, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 12),
+        AlignedBlockList!(BitmappedBlock!(16, platformAlignment, NullAllocator, No.multiblock), RootType*, 1 << 12),
         Segregator!(
 
         32,
-        AlignedBlockList!(BitmappedBlock!(32, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 12),
+        AlignedBlockList!(BitmappedBlock!(32, platformAlignment, NullAllocator, No.multiblock), RootType*, 1 << 12),
         Segregator!(
 
         64,
-        AlignedBlockList!(BitmappedBlock!(64, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 13),
+        AlignedBlockList!(BitmappedBlock!(64, platformAlignment, NullAllocator, No.multiblock), RootType*, 1 << 13),
         Segregator!(
 
         128,
-        AlignedBlockList!(BitmappedBlock!(128, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 14),
+        AlignedBlockList!(BitmappedBlock!(128, platformAlignment, NullAllocator, No.multiblock), RootType*, 1 << 14),
         Segregator!(
 
         256,
-        AlignedBlockList!(BitmappedBlock!(256, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 15),
+        AlignedBlockList!(BitmappedBlock!(256, platformAlignment, NullAllocator, No.multiblock), RootType*, 1 << 15),
         Segregator!(
 
         512,
-        AlignedBlockList!(BitmappedBlock!(512, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 16),
+        AlignedBlockList!(BitmappedBlock!(512, platformAlignment, NullAllocator, No.multiblock), RootType*, 1 << 16),
         Segregator!(
 
         1024,
-        AlignedBlockList!(BitmappedBlock!(1024, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 17),
+        AlignedBlockList!(BitmappedBlock!(1024, platformAlignment, NullAllocator, No.multiblock), RootType*, 1 << 17),
         Segregator!(
 
         2048,
-        AlignedBlockList!(BitmappedBlock!(2048, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 18),
+        AlignedBlockList!(BitmappedBlock!(2048, platformAlignment, NullAllocator, No.multiblock), RootType*, 1 << 18),
         Segregator!(
 
         1 << 12,
-        AlignedBlockList!(BitmappedBlock!(1 << 12, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 19),
+        AlignedBlockList!(BitmappedBlock!(1 << 12, platformAlignment, NullAllocator, No.multiblock), RootType*, 1 << 19),
         Segregator!(
 
         1 << 13,
-        AlignedBlockList!(BitmappedBlock!(1 << 13, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 20),
+        AlignedBlockList!(BitmappedBlock!(1 << 13, platformAlignment, NullAllocator, No.multiblock), RootType*, 1 << 20),
         Segregator!(
 
         1 << 14,
-        AlignedBlockList!(BitmappedBlock!(1 << 14, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 21),
+        AlignedBlockList!(BitmappedBlock!(1 << 14, platformAlignment, NullAllocator, No.multiblock), RootType*, 1 << 21),
         Segregator!(
 
         1 << 15,
-        AlignedBlockList!(BitmappedBlock!(1 << 15, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 21),
+        AlignedBlockList!(BitmappedBlock!(1 << 15, platformAlignment, NullAllocator, No.multiblock), RootType*, 1 << 21),
         Segregator!(
 
         1 << 16,
-        AlignedBlockList!(BitmappedBlock!(1 << 15, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 21),
+        AlignedBlockList!(BitmappedBlock!(1 << 16, platformAlignment, NullAllocator, No.multiblock), RootType*, 1 << 21),
         Segregator!(
 
         1 << 17,
-        AlignedBlockList!(BitmappedBlock!(1 << 15, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 21),
+        AlignedBlockList!(BitmappedBlock!(1 << 17, platformAlignment, NullAllocator, No.multiblock), RootType*, 1 << 21),
         Segregator!(
 
         1 << 18,
-        AlignedBlockList!(BitmappedBlock!(1 << 15, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 21),
+        AlignedBlockList!(BitmappedBlock!(1 << 18, platformAlignment, NullAllocator, No.multiblock), RootType*, 1 << 21),
         Segregator!(
 
         1 << 19,
-        AlignedBlockList!(BitmappedBlock!(1 << 15, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 21),
+        AlignedBlockList!(BitmappedBlock!(1 << 19, platformAlignment, NullAllocator, No.multiblock), RootType*, 1 << 21),
         Segregator!(
 
         1 << 20,
-        AlignedBlockList!(BitmappedBlock!(1 << 15, platformAlignment, NullAllocator, No.multiblock), SharedAscendingPageAllocator*, 1 << 21),
-        SharedAscendingPageAllocator*
+        AlignedBlockList!(BitmappedBlock!(1 << 20, platformAlignment, NullAllocator, No.multiblock), RootType*, 1 << 21),
+        RootType*
         )))))))))))))))));
 
         LocalObjectAllocator loa;
@@ -1163,7 +1166,7 @@ struct TypeAllocator(T)
         enum sz = LocalObjectAllocator.sizeof + LocalArrayAllocator.sizeof;
         char[sz.roundUpToMultipleOf(64) - sz] padding;
 
-    void initAlloc(SharedAscendingPageAllocator* rootAlloc)
+    void initAlloc(RootType* rootAlloc)
     {
         laa.allocatorForSize!(1 << 21) = rootAlloc;
         laa.allocatorForSize!(1 << 20).parent = rootAlloc;
@@ -1228,7 +1231,8 @@ struct ThreadLocalAllocator
         return tlalloc.deallocate(b);
     }
 }
-shared SharedAscendingPageAllocator rootAllocator;
+import std.algorithm.comparison : max;
+shared SharedAllocatorList!((n) => SharedAscendingPageAllocator(max(n, 1 << 25)), NullAllocator) rootAllocator;
 
 
 /**
