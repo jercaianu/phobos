@@ -226,6 +226,18 @@ module std.experimental.allocator;
 public import std.experimental.allocator.common,
     std.experimental.allocator.typed;
 
+// Fix issue 17806: this should always be the first unittest in this module
+// in order to ensure that we use the `processAllocator` setter before the getter
+@system unittest
+{
+    import std.experimental.allocator.mallocator : Mallocator;
+    import std.experimental.allocator.gc_allocator : GCAllocator;
+    auto newAlloc = sharedAllocatorObject(Mallocator.instance);
+    processAllocator = newAlloc;
+    assert(processAllocator is newAlloc);
+    processAllocator = sharedAllocatorObject(GCAllocator.instance);
+}
+
 // Example in the synopsis above
 @system unittest
 {
@@ -369,7 +381,7 @@ nothrow:
 
     For stateless allocators, this does nothing.
     */
-    @safe @nogc
+    @safe @nogc pure
     void incRef();
 
     /**
@@ -380,7 +392,7 @@ nothrow:
     Returns: `true` if the reference count is greater than `0` and `false` when
     it hits `0`. For stateless allocators, it always returns `true`.
     */
-    @safe @nogc
+    @safe @nogc pure
     bool decRef();
 }
 
@@ -405,14 +417,14 @@ struct RCIAllocator
     private IAllocator _alloc;
 
 nothrow:
-    private @nogc @safe
+    private @nogc pure @safe
     this(this _)(IAllocator alloc)
     {
         assert(alloc);
         _alloc = alloc;
     }
 
-    @nogc @safe
+    @nogc pure @safe
     this(this)
     {
         if (_alloc !is null)
@@ -421,7 +433,7 @@ nothrow:
         }
     }
 
-    @nogc @safe
+    @nogc pure @safe
     ~this()
     {
         if (_alloc !is null)
@@ -431,7 +443,7 @@ nothrow:
         }
     }
 
-    @nogc @safe
+    @nogc pure @safe
     auto ref opAssign()(typeof(this) rhs)
     {
         if (_alloc is rhs._alloc)
@@ -447,7 +459,7 @@ nothrow:
         return this;
     }
 
-    pure nothrow @safe @nogc
+    @nogc pure @safe
     bool isNull(this _)()
     {
         return _alloc is null;
@@ -712,7 +724,7 @@ nothrow:
 
     For stateless allocators, this does nothing.
     */
-    @safe @nogc
+    @safe @nogc pure
     void incRef() shared;
 
     /**
@@ -725,7 +737,7 @@ nothrow:
     Returns: `true` if the reference count is greater than `0` and `false` when
     it hits `0`. For stateless allocators, it always returns `true`.
     */
-    @safe @nogc
+    @safe @nogc pure
     bool decRef() shared;
 }
 
@@ -751,14 +763,14 @@ shared struct RCISharedAllocator
     private ISharedAllocator _alloc;
 
 nothrow:
-    private @nogc @safe
+    private @nogc pure @safe
     this(shared ISharedAllocator alloc)
     {
         assert(alloc);
         _alloc = alloc;
     }
 
-    @nogc @safe
+    @nogc pure @safe
     this(this)
     {
         if (_alloc !is null)
@@ -767,7 +779,7 @@ nothrow:
         }
     }
 
-    @nogc @safe
+    @nogc pure @safe
     ~this()
     {
         if (_alloc !is null)
@@ -777,7 +789,7 @@ nothrow:
         }
     }
 
-    @nogc @safe
+    @nogc pure @safe
     auto ref opAssign()(RCISharedAllocator rhs)
     {
         if (_alloc is rhs._alloc)
@@ -795,7 +807,7 @@ nothrow:
         return this;
     }
 
-    pure nothrow @safe @nogc
+    @nogc pure @safe
     bool isNull(this _)()
     {
         return _alloc is null;
@@ -883,7 +895,7 @@ nothrow:
 private RCISharedAllocator _processAllocator;
 private RCIAllocator _threadAllocator;
 
-nothrow @nogc @safe
+@nogc nothrow @safe
 private ref RCIAllocator setupThreadAllocator()
 {
     /*
@@ -965,11 +977,13 @@ private ref RCIAllocator setupThreadAllocator()
             return _allocator.empty();
         }
 
+        @nogc pure @safe
         override void incRef()
         {
             _allocator._alloc.incRef();
         }
 
+        @nogc pure @safe
         override bool decRef()
         {
             return _allocator._alloc.decRef();
@@ -997,7 +1011,6 @@ private ref RCIAllocator setupThreadAllocator()
     theAllocator.deallocate(buf);
 }
 
-
 /**
 Gets/sets the allocator for the current thread. This is the default allocator
 that should be used for allocating thread-local memory. For allocating memory
@@ -1005,7 +1018,7 @@ to be shared across threads, use `processAllocator` (below). By default,
 `theAllocator` ultimately fetches memory from `processAllocator`, which
 in turn uses the garbage collected heap.
 */
-nothrow @safe @nogc
+@nogc nothrow @safe
 @property ref RCIAllocator theAllocator()
 {
     alias p = _threadAllocator;
@@ -1040,7 +1053,7 @@ Gets/sets the allocator for the current process. This allocator must be used
 for allocating memory shared across threads. Objects created using this
 allocator can be cast to `shared`.
 */
-@trusted nothrow @nogc
+@nogc nothrow @trusted
 @property ref RCISharedAllocator processAllocator()
 {
     import std.experimental.allocator.gc_allocator : GCAllocator;
@@ -1052,15 +1065,15 @@ allocator can be cast to `shared`.
                 sharedAllocatorObject(GCAllocator.instance));
     }
 
-    return *(cast(RCISharedAllocator* function() nothrow @nogc)(&forceAttributes))();
+    return *(cast(RCISharedAllocator* function() @nogc nothrow)(&forceAttributes))();
 }
 
 /// Ditto
-nothrow @system @nogc
-@property void processAllocator(RCISharedAllocator a)
+@nogc nothrow @system
+@property void processAllocator(ref RCISharedAllocator a)
 {
     assert(!a.isNull);
-    _processAllocator = a;
+    processAllocator() = a;
 }
 
 @system unittest
@@ -2762,11 +2775,14 @@ class CAllocatorImpl(Allocator, Flag!"indirect" indirect = No.indirect)
     {
     nothrow:
         private Allocator* pimpl;
-        @nogc
+
+        @nogc pure @safe
         ref Allocator impl()
         {
             return *pimpl;
         }
+
+        @nogc pure @safe
         this(Allocator* pa)
         {
             pimpl = pa;
@@ -2926,13 +2942,13 @@ nothrow:
         }
     }
 
-    nothrow @safe @nogc
+    @nogc nothrow pure @safe
     override void incRef()
     {
         static if (stateSize!Allocator) ++rc;
     }
 
-    nothrow @trusted @nogc
+    @nogc nothrow pure @trusted
     override bool decRef()
     {
         static if (stateSize!Allocator)
@@ -2989,11 +3005,14 @@ class CSharedAllocatorImpl(Allocator, Flag!"indirect" indirect = No.indirect)
     {
     nothrow:
         private shared Allocator* pimpl;
-        @nogc
+
+        @nogc pure @safe
         ref Allocator impl() shared
         {
             return *pimpl;
         }
+
+        @nogc pure @safe
         this(Allocator* pa) shared
         {
             pimpl = pa;
@@ -3153,13 +3172,13 @@ nothrow:
         }
     }
 
-    nothrow @safe @nogc
+    @nogc nothrow pure @safe
     override void incRef() shared
     {
         static if (stateSize!Allocator) atomicOp!"+="(rc, 1);
     }
 
-    nothrow @trusted @nogc
+    @nogc nothrow pure @trusted
     override bool decRef() shared
     {
         static if (stateSize!Allocator)
@@ -3177,9 +3196,11 @@ nothrow:
                 {
                     Allocator tmp;
                     memcpy(cast(void*) &tmp, cast(void*) &this.impl, Allocator.sizeof);
+                    Allocator empty;
+                    memcpy(cast(void*) &this.impl, cast(void*) &empty, Allocator.sizeof);
                 }
                 void[] support = (cast(void*) this)[0 .. stateSize!(typeof(this))];
-                tmp.deallocate(support);
+                (cast(bool delegate(void[]) @nogc nothrow pure)(&tmp.deallocate))(support);
                 return false;
             }
             return true;
