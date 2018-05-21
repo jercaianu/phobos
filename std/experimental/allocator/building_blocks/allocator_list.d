@@ -7,6 +7,7 @@ module std.experimental.allocator.building_blocks.allocator_list;
 import std.experimental.allocator.building_blocks.null_allocator;
 import std.experimental.allocator.common;
 import std.experimental.allocator.gc_allocator;
+import std.typecons : Flag, Yes, No;
 
 // Turn this on for debugging
 // debug = allocator_list;
@@ -64,7 +65,8 @@ state, which will be stored inside `AllocatorList` as a direct `public` member
 called `factory`.
 
 */
-struct AllocatorList(Factory, BookkeepingAllocator = GCAllocator)
+struct AllocatorList(Factory, BookkeepingAllocator = GCAllocator,
+    Flag!"manualCleanup" manualCleanup = No.manualCleanup)
 {
     import std.conv : emplace;
     import std.experimental.allocator.building_blocks.stats_collector
@@ -477,9 +479,19 @@ struct AllocatorList(Factory, BookkeepingAllocator = GCAllocator)
                 n.next = root;
                 root = n;
             }
-            if (n.empty != Ternary.yes) return result;
+
+            static if (manualCleanup)
+            {
+                return result;
+            }
+            else
+            {
+                if (n.empty != Ternary.yes)
+                    return result;
+            }
             break;
         }
+
         // Hmmm... should we return this allocator back to the wild? Let's
         // decide if there are TWO empty allocators we can release ONE. This
         // is to avoid thrashing.
@@ -494,6 +506,35 @@ struct AllocatorList(Factory, BookkeepingAllocator = GCAllocator)
             break;
         }
         return result;
+    }
+
+    void deleteEmptyAllocators()
+    {
+        if (root is null)
+            return;
+
+        Node sentinel;
+        sentinel.next = root;
+
+        auto prev = &sentinel;
+        auto cur = prev.next;
+
+        while (cur)
+        {
+            if (cur.empty != Ternary.yes)
+            {
+                prev = cur;
+                cur = prev.next;
+                continue;
+            }
+
+            cur.a.destroy;
+            prev.next = cur.next;
+            if (cur == root)
+                root = cur.next;
+            cur.setUnused();
+            cur = prev.next;
+        }
     }
 
     /**
@@ -567,7 +608,8 @@ struct AllocatorList(Factory, BookkeepingAllocator = GCAllocator)
 
 /// Ditto
 template AllocatorList(alias factoryFunction,
-    BookkeepingAllocator = GCAllocator)
+    BookkeepingAllocator = GCAllocator,
+    Flag!"manualCleanup" manualCleanup = No.manualCleanup)
 {
     alias A = typeof(factoryFunction(1));
     static assert(
@@ -787,6 +829,31 @@ version(Posix) @system unittest
     assert(b1.length == 64 * bs);
     assert(a.allocators.length == 2);
     a.deallocateAll();
+}
+
+@system unittest
+{
+    // Create an allocator based upon 4MB regions, fetched from the GC heap.
+    import std.algorithm.comparison : max;
+    import std.experimental.allocator.building_blocks.region : Region;
+    AllocatorList!((n) => Region!()(new ubyte[max(n, 1024)]), GCAllocator, Yes.manualCleanup) a;
+    auto b1 = a.allocate(1024);
+    auto b2 = a.allocate(1024);
+    auto b3 = a.allocate(1024);
+
+    assert(a.deallocate(b1));
+    assert(a.deallocate(b2));
+    assert(a.deallocate(b3));
+
+    auto allocators = a.allocators;
+    assert(a.allocators.length == 3);
+    a.deleteEmptyAllocators();
+
+    foreach (ref node; allocators)
+        assert(node.next == &node);
+
+    assert(a.allocate(512).length == 512);
+    assert(a.allocate(512).length == 512);
 }
 
 @system unittest
